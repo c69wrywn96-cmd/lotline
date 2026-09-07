@@ -13,8 +13,8 @@ spine of the data model, not a bolt-on map view.
 
 **Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
 (project structure, spatial framework, vertical datum) are migrated, seeded and
-tested. **Phase 1 complete; Phase 2 hardening landed ahead of the ITP schema.**
-216 tests green — RLS and immutability at SQL level against `lotline_app`, the
+tested. **Phase 2 in progress — the gate logic is green.**
+238 tests green — RLS and immutability at SQL level against `lotline_app`, the
 permission resolver, the authentication seam, credential sign-in, account
 linking, the device and people screens, and the silent-pruning guard.
 
@@ -26,7 +26,7 @@ ADR-0023.
 npm install
 npm run db:reset         # apply every migration to a fresh database
 npm run db:seed          # one realistic JV project
-npm test                 # 216 assertions across 15 suites
+npm test                 # 238 assertions across 16 suites
 npm run build            # Next.js app (device enrolment screens)
 ```
 
@@ -49,6 +49,7 @@ npm run build            # Next.js app (device enrolment screens)
 | `tests/people-ui.test.ts` | That changing someone's authority requires step-up, that **nobody can grant themselves a role**, and that the change history is read from the audit log rather than a parallel table. |
 | `tests/rls-pruning-guard.test.ts` | **Fails the build** on any policy that reads another RLS-enabled table without a declared disposition, and on any policy helper that is not `SECURITY DEFINER`. See ADR-0026. |
 | `tests/org-administrator.test.ts` | That the organisation administrator can unstick people and **cannot do the work**, that a tenant keeps at least two, and that every use of the escalation route is logged distinctly. |
+| `tests/hold-point.test.ts` | The eleven §4.5 assertions: a hold blocks and a **witness never does**, evidence cannot be pre-loaded past a block, all three release kinds clear it, a correction **re-blocks**, and an unsigned clearance clears nothing. Plus that an administrative-lag claim with nothing behind it degrades automatically. |
 
 | Document | Contents |
 |---|---|

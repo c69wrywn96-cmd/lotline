@@ -7,6 +7,7 @@
  * Real rows through the real schema. No fixtures pretending to be data.
  */
 import pg from 'pg';
+import { seedItp, seedLot } from './itp';
 
 const url = process.env.DATABASE_URL_OWNER ?? 'postgres://postgres:postgres@localhost:5432/lotline';
 
@@ -363,6 +364,10 @@ async function main() {
       [tablet.id, req(users, key), ev.id],
     );
   }
+
+  // The §12.1 acceptance ITP and the lot it attaches to.
+  const itp = await seedItp(c, project.id);
+  await seedLot(c, project.id, itp.versionId);
 
   await c.query('COMMIT');
 
