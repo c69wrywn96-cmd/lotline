@@ -354,3 +354,76 @@ describe('read-only role', () => {
     }
   });
 });
+
+describe('multi-role membership (regression, migration 0013)', () => {
+  it('a user may hold two roles on one project without colliding grants', async () => {
+    // An Engineering Manager acting as Construction Manager is ordinary cover.
+    // Before 0013 the second membership violated access_grant_pkey.
+    const projectId = await asOwner(async (c) =>
+      (await c.query(`SELECT id FROM project WHERE code='MRU2'`)).rows[0].id);
+    const uid = await userId(USERS.em);
+
+    await asOwner(async (c) => {
+      await c.query(
+        `INSERT INTO project_membership (project_id, user_id, role_id, write_scope_type)
+         VALUES ($1,$2,(SELECT id FROM role WHERE code='CM' AND owner_org_id IS NULL),'project')`,
+        [projectId, uid],
+      );
+    });
+
+    const grants = await asOwner(async (c) =>
+      (
+        await c.query(
+          `SELECT grant_kind, scope_type FROM access_grant
+            WHERE user_id=$1 AND project_id=$2 ORDER BY grant_kind`,
+          [uid, projectId],
+        )
+      ).rows,
+    );
+    expect(grants).toEqual([
+      { grant_kind: 'read', scope_type: 'project' },
+      { grant_kind: 'write', scope_type: 'project' },
+    ]);
+
+    // Retiring ONE of the two roles must not strip access the other still
+    // confers — the failure mode that ON CONFLICT DO NOTHING would have hidden.
+    await asOwner(async (c) => {
+      await c.query(
+        `UPDATE project_membership
+            SET active_period = daterange(CURRENT_DATE - 2, CURRENT_DATE - 1, '[)')
+          WHERE user_id=$1 AND project_id=$2
+            AND role_id = (SELECT id FROM role WHERE code='CM' AND owner_org_id IS NULL)`,
+        [uid, projectId],
+      );
+    });
+
+    const after = await asOwner(async (c) =>
+      (
+        await c.query(
+          `SELECT count(*)::int n FROM access_grant WHERE user_id=$1 AND project_id=$2`,
+          [uid, projectId],
+        )
+      ).rows[0].n,
+    );
+    expect(after, 'the Engineering Manager still holds their own role').toBe(2);
+    expect(await countAs(USERS.em, 'zone')).toBeGreaterThan(0);
+  });
+
+  it('a user cannot hold roles on both sides of one contract', async () => {
+    // side drives the client/contractor UI shell, so collapsing two sides onto
+    // one grant would mean nobody knows which side they are signing on.
+    const projectId = await asOwner(async (c) =>
+      (await c.query(`SELECT id FROM project WHERE code='MRU2'`)).rows[0].id);
+    const uid = await userId(USERS.qm); // contractor side
+
+    await expect(
+      asOwner(async (c) =>
+        c.query(
+          `INSERT INTO project_membership (project_id, user_id, role_id, write_scope_type)
+           VALUES ($1,$2,(SELECT id FROM role WHERE code='SR' AND owner_org_id IS NULL),'project')`,
+          [projectId, uid],
+        ),
+      ),
+    ).rejects.toThrow(/LOTLINE_SIDE_CONFLICT/);
+  });
+});

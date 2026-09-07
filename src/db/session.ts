@@ -24,6 +24,18 @@ export interface SessionContext {
   deviceId?: string;
   /** The authentication_event that authorised this session (ADR-0021). */
   authEventId?: string;
+  /**
+   * How strongly this session authenticated. Drives the §10 authentication
+   * floor: a hold point release needs step-up, a photo upload does not.
+   * Defaults to the weakest level, so an unset value can never over-authorise.
+   */
+  authStrength?: 'session' | 'device_unlock' | 'step_up';
+  /**
+   * True when the session runs on a shared, enrolled site device. Such a
+   * session is capability-restricted regardless of the user's role: no role
+   * management, no exports, no API keys.
+   */
+  deviceBound?: boolean;
 }
 
 export type SessionClient = {
@@ -58,7 +70,9 @@ export class Database {
                 set_config('app.ip', $3, true),
                 set_config('app.user_agent', $4, true),
                 set_config('app.device_id', $5, true),
-                set_config('app.auth_event_id', $6, true)`,
+                set_config('app.auth_event_id', $6, true),
+                set_config('app.auth_strength', $7, true),
+                set_config('app.device_bound', $8, true)`,
         [
           ctx.userId,
           ctx.requestId ?? '',
@@ -66,6 +80,8 @@ export class Database {
           ctx.userAgent ?? '',
           ctx.deviceId ?? '',
           ctx.authEventId ?? '',
+          ctx.authStrength ?? 'session',
+          String(ctx.deviceBound ?? false),
         ],
       );
       const result = await fn({
