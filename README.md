@@ -13,9 +13,9 @@ spine of the data model, not a bolt-on map view.
 
 **Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
 (project structure, spatial framework, vertical datum) are migrated, seeded and
-tested. 173 tests green — RLS and immutability at SQL level against `lotline_app`, the
-permission resolver, the authentication seam, credential sign-in, account
-linking, and the device enrolment screens.
+tested. **Phase 1 complete.** 186 tests green — RLS and immutability at SQL level against
+`lotline_app`, the permission resolver, the authentication seam, credential
+sign-in, account linking, and the device and people screens.
 
 Design reviews 1 and 2 are complete; see `docs/decisions.md` for ADR-0001 …
 ADR-0023.
@@ -25,7 +25,7 @@ ADR-0023.
 npm install
 npm run db:reset         # apply every migration to a fresh database
 npm run db:seed          # one realistic JV project
-npm test                 # 173 assertions across 12 suites
+npm test                 # 186 assertions across 13 suites
 npm run build            # Next.js app (device enrolment screens)
 ```
 
@@ -45,6 +45,7 @@ npm run build            # Next.js app (device enrolment screens)
 | `tests/devices-ui.test.ts` | That an administrator cannot set a user's PIN, that device trust and user enrolment stay visibly separate states, and that revocation is immediate. |
 | `tests/standards-import.test.ts` | That the specification importer takes identifiers and structure and **rejects** a register carrying clause text (ADR-0006). |
 | `tests/credentials.test.ts` | That the sign-in form is not an enumeration oracle, that a TOTP code cannot be replayed inside its own window, that recovery codes are single-use and buy only a session, and that a retired credential cannot authenticate. |
+| `tests/people-ui.test.ts` | That changing someone's authority requires step-up, that **nobody can grant themselves a role**, and that the change history is read from the audit log rather than a parallel table. |
 
 | Document | Contents |
 |---|---|
@@ -65,6 +66,8 @@ npm run build            # Next.js app (device enrolment screens)
 | `src/db/session.ts` | The only door to the database: a transaction bound to a caller identity via `SET LOCAL`. Obtaining a connection without one is not possible. |
 | `src/auth/` | Permission resolution (a thin client over `auth.decide()` — the rules live in SQL, once), home-realm discovery, authentication-strength derivation, and the request→session bridge. |
 | `src/app/devices/` | Device enrolment and management. All logic sits in `data.ts` and is tested directly, because this is the feature where a UI can quietly undermine the security model. |
+| `src/app/people/` | User and role management, and the authority-change history. |
+| `src/app/signin/` | Home-realm discovery as a screen: the address is entered first, and only the applicable route is offered. |
 | `seed/standards/` | Specification register importer and its format. No register is committed — see the README there. |
 | `seed/` | One realistic joint-venture project. Real rows through the real schema. |
 
