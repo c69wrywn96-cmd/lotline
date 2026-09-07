@@ -1,8 +1,11 @@
 # Architecture Decision Records
 
 Per §0 of the build brief: every judgement call made in the absence of an explicit
-requirement is recorded here as a numbered ADR. Status is `Proposed` until the
-design review in §14 concludes.
+requirement is recorded here as a numbered ADR.
+
+ADR-0001 through ADR-0005 and ADR-0006 through ADR-0017 were reviewed at design
+review 1. ADR-0004 and ADR-0010 were amended there; ADR-0018 through ADR-0022 are
+new and carry the review's answers.
 
 ---
 
@@ -69,7 +72,8 @@ and partitioning handles the audit log.
 ---
 
 ### ADR-0004 — Canonical geometry is EPSG:7844 (GDA2020 geographic); source geometry is retained; measurement happens in the project's MGA zone
-**Status:** Proposed
+**Status:** Accepted at design review 1, **amended** — this ADR governs the
+horizontal only. Vertical position is ADR-0018.
 
 **Context.** Australian survey data arrives as MGA2020 (EPSG:7849–7856, one zone
 per project, occasionally two). GDA94 and GDA2020 differ by roughly 1.8 m — in
@@ -89,9 +93,17 @@ project's MGA zone — never on `geography`. Import **requires** an explicit SRI
 there is no default and no guess. GDA94 input is accepted but flagged and
 transformed with an explicit, logged transformation.
 
-**Consequences.** Storage triples for geometry columns. In exchange, a datum
-dispute is resolvable from the record, quantities match the surveyor, and no lot
-is silently 1.8 m out.
+**Consequences.** Storage triples for geometry columns. In exchange, a horizontal
+datum dispute is resolvable from the record, quantities match the surveyor, and no
+lot is silently 1.8 m out.
+
+**Amendment (design review 1).** As originally written this solved horizontal
+position and left vertical position as bare `rl_top_m` / `rl_bottom_m` numerics
+with the datum inferred from `project.vertical_datum` — which is the same
+unnamed-datum failure this ADR exists to prevent, one axis over. Vertical position
+is now ADR-0018: an explicit attribute against a named datum, carried on the
+record. Canonical `geom` is consequently **2D**; any Z ordinate in imported data
+survives only in `geom_source` as provenance.
 
 ---
 
@@ -199,23 +211,47 @@ the same rendered assets, so a 300-lot volume is near-linear merge cost.
 
 ---
 
-### ADR-0010 — Hold-point blocking is a database trigger; the sole bypass is a signed concession
-**Status:** Proposed
+### ADR-0010 — Hold-point blocking is a database trigger; clearance is a signed record
+**Status:** Accepted at design review 1, **amended** — hold and witness are now
+structurally distinct, and clearance is record-based with three kinds.
 
 **Context.** §13: "Do not let a hold point be bypassed by any role without a
 recorded concession." §12.4 requires proof of blocking.
 
 **Decision.** `itp_blocking_predecessor()` plus a `BEFORE UPDATE` trigger on
 `itp_checkpoint` and a `BEFORE INSERT` trigger on `checkpoint_evidence`. No
-permission, role, flag or environment variable suppresses it. The only path past
-a hold is guard C10: a `concession` with an Engineering Manager signature and, for
-client-nominated holds, a client signature and an attached document — which
-writes a normal `hold_release` carrying `concession_id`, and which appears on the
-conformance pack.
+permission, role, flag or environment variable suppresses either.
 
-**Consequences.** Blocking is provable in `psql`, independent of the application.
-Emergency situations require the concession workflow rather than an override
-switch; this is intended.
+**Amendment (design review 1), two parts.**
+
+*Hold and witness are structurally distinct.* Only a hold point blocks. A witness
+point never does — work proceeds once the notice period elapses, whether or not
+the client attends. This is now enforced by a CHECK constraint
+(`blocking_scope = 'none' OR checkpoint_type = 'hold'`) on both the master and
+instance checkpoint tables, so a witness point cannot be given a blocking scope by
+any author at any level, **and** by the predicate filtering on
+`checkpoint_type = 'hold'`, so the behaviour survives the constraint being
+dropped. A Quality Manager who believes a witness point should stop work must
+model it as a hold point — which is correct, and is visible to the client as such.
+
+*Clearance is a record, not a flag.* The trigger asks whether a signed
+`hold_release` row exists, not whether a status is set. `hold_release` carries a
+`release_kind`:
+
+| Kind | Supporting record | Signature requirement |
+|---|---|---|
+| `standard` | none | Nominated `release_role_id`, matching side |
+| `concession` | `concession_id` | EM signature, plus client where the hold is client-nominated |
+| `retrospective` | `retrospective_release_id` | **Identical to `standard`** |
+
+This is what accommodates the two legitimate late paths the review identified —
+retrospective release by the client, and correction of a mis-signed checkpoint —
+without an override flag. See ADR-0019.
+
+**Consequences.** Blocking is provable in `psql`, independent of the application,
+and §12.4 is unaffected: the trigger has exactly one thing to look for, and that
+thing is always signed. Emergency and late situations produce records rather than
+exceptions to the rule.
 
 ---
 
@@ -342,3 +378,229 @@ fence holds at the tile layer, not just the API.
 **Consequences.** Tiles are always current and always correctly scoped. Cost:
 tile queries hit the database; mitigated by the GiST index, the simplification
 ladder, point clustering at low zoom, and edge caching keyed by user scope.
+
+---
+
+### ADR-0018 — Vertical position is an explicit attribute against a named datum, never carried in geometry
+**Status:** Accepted at design review 1
+
+**Context.** Earthworks and pavement lots are defined by reduced level as much as
+by plan position: subgrade at RL 32.450, SBC at RL 32.600, the same footprint
+three times over. ADR-0004 solved the horizontal datum problem and left the
+vertical one open — RLs were bare numerics with the datum inferred from a project
+setting. Surveyors deliver levels against AHD; an unnamed level is not evidence,
+and a level inferred from a project default is an assumption dressed as a fact.
+
+Carrying RL inside the geometry does not fix it either. `geometry(PointZ, 7844)`
+has a Z ordinate with **no defined vertical datum** — EPSG:7844 is a 2D geographic
+CRS. Storing height there produces a number that looks authoritative and means
+nothing without out-of-band knowledge, which is precisely the failure mode.
+
+**Decision.**
+
+1. Canonical `geom` is **2D**. Any Z in imported data survives in `geom_source`
+   as provenance only.
+2. A `vertical_datum` table names the datum: `AHD71` (mainland),
+   `AHD_TAS83` (Tasmania), and local or assumed datums tied to a site benchmark —
+   which are common enough on constrained sites to be worth modelling rather than
+   forcing into a note.
+3. Every reduced level anywhere in the system is a **pair**:
+   `<name>_rl_m numeric(9,3)` plus `vertical_datum_id`, with
+   `CHECK ((rl_m IS NULL) = (vertical_datum_id IS NULL))`. An RL without a named
+   datum cannot be stored.
+4. `project.default_vertical_datum_id` seeds new records. It is **never** consulted
+   to interpret a stored RL.
+5. Design, surveyed, deviation and tolerance are separate columns, so vertical
+   conformance is computed from the record rather than asserted.
+6. Level comparisons across two different `vertical_datum_id` values are rejected,
+   not silently arithmetic.
+7. `survey_conformance` additionally records `geoid_model`
+   (`AUSGeoid2020` / `AUSGeoid09` / `none_direct_levelling`), because a
+   GNSS-derived height is ellipsoidal until a geoid model converts it to AHD, and
+   the difference between the two AUSGeoid realisations is decimetres — enough to
+   fail a pavement layer that was built correctly.
+8. Horizontal and vertical deviations and tolerances are tracked separately
+   throughout, because they have different acceptance criteria.
+
+**Consequences.** Every RL-bearing table carries an extra FK, and the lot raise
+wizard has to ask for a datum — defaulted from the project, but stamped onto the
+record. In exchange the layer cake is real: the vertical stack at a chainage is a
+query, thickness conformance is computed against a named datum, and a level
+dispute is resolvable from the record rather than from someone's memory of what
+the surveyor was working to.
+
+---
+
+### ADR-0019 — The late paths are records, not overrides
+**Status:** Accepted at design review 1
+
+**Context.** ADR-0010 as first written admitted exactly one exit from a hold point
+— a concession. The review identified two further paths that are real and routine:
+a Quality Manager correcting a mis-signed checkpoint, and a client releasing a hold
+point retrospectively after work has physically gone past it. Both must be
+possible. Neither may be an override flag.
+
+**Decision.** Both are modelled as signed records the blocking predicate accepts as
+valid clearance.
+
+*Retrospective release* (`hold_release.release_kind = 'retrospective'`). The
+trigger was never bypassed: the block held, the site moved on, and the record is
+being reconciled with what happened. The record captures when work actually
+proceeded, the resulting lag, how the lapse was discovered, and — the field that
+carries the engineering weight — `verification_basis`: how the releasing party
+satisfied themselves the work was conforming once they could no longer see it
+(`contemporaneous_evidence` / `physical_reinspection` / `destructive_verification`
+/ `none`). Supporting evidence is mandatory unless the basis is `none`. The signer
+must hold the nominated `release_role_id` on the correct side, exactly as for a
+standard release — **lateness never relaxes who may sign.**
+
+*Checkpoint correction* (`checkpoint_correction` + `signature_withdrawal`). Signed
+rows are locked and signatures are immutable (ADR-0003), so correction is
+supersession. The original checkpoint, its evidence and its signatures are all
+retained; each withdrawn signature gets a `signature_withdrawal` that is itself
+signed, with a reason. A replacement checkpoint is created at the same sequence.
+**If the corrected checkpoint is a hold, its replacement has no clearance record
+and re-blocks immediately** — a correction cannot be used to launder a hold point.
+
+A retrospective release always raises a process NCR. Proceeding past an unreleased
+hold point is a non-conformance under any QMS, and an ISO 9001 or client system
+auditor expects to find it in the register. Proposed severity is `minor` where the
+work was verified from contemporaneous evidence or reinspection, `major` where
+destructive verification was needed or nothing verified it. Severity is proposed;
+a human confirms.
+
+**Consequences.** §12.4 is unaffected — the trigger has one thing to look for and
+it is always signed. The paths engineers actually need exist, and using them leaves
+a trail: `retrospective_lag` and `discovery_method` feed the trend engine, so a
+crew that habitually outruns its hold points becomes visible instead of invisible.
+The conformance pack's appendix carries every concession, retrospective release and
+signature withdrawal against the lot — a lot that got to conformed the hard way
+says so on the paper.
+
+*Open for confirmation:* whether the automatic process NCR should be unconditional
+or contract-configurable. It is unconditional as designed.
+
+---
+
+### ADR-0020 — A joint venture shares one register; write authority is scoped by zone and WBS
+**Status:** Accepted at design review 1 (resolves OQ-3)
+
+**Context.** An unincorporated joint venture delivers one contract under one
+quality management system with one ITP library. Partner-segregated QA data would
+be a fiction — there is one lot register handed to the client. But JVs split work
+geographically, and each partner's engineers own their sections.
+
+**Decision.** `access_grant` separates read scope from write scope
+(`grant_kind ∈ {read, write}`). A JV partner's Section Engineer holds
+`read/project` and `write/zone` (or `write/wbs`). RLS `SELECT` policies resolve
+against read grants; `INSERT` and `UPDATE` `WITH CHECK` clauses resolve against
+write grants.
+
+Zone and WBS scopes nest, so `scope_path` carries the subtree as `ltree` and
+`lot` carries materialised `zone_path` and `wbs_path`. Containment is
+`lot.wbs_path <@ g.scope_path` — a GiST probe, so write authority over WBS 3.2
+covers 3.2.1.4 without enumeration and without a recursive subquery per row.
+
+**This does not widen the external fence.** Project-wide read is issued only for
+`contractor`, `client` and `verifier` side memberships. An `external` membership
+(subcontractor, supplier) yields narrow grants for both kinds, and there is a
+database-level assertion — plus a test — that no external membership ever produces
+a `read/project` row.
+
+**Consequences.** A JV partner can see another partner's zone and cannot write it;
+the `USING` / `WITH CHECK` asymmetry means Postgres reports a policy violation
+rather than hiding the row, so the UI can say "outside your assigned sections"
+instead of "not found". Cross-partner reads are logged as cross-organisation
+restricted reads, which partners will want visibility of. Cost: two grant rows per
+membership instead of one, and an `ltree` column to maintain on `lot`.
+
+---
+
+### ADR-0021 — Four authentication patterns, and device trust is separate from user identity
+**Status:** Accepted at design review 1 (resolves OQ-8)
+
+**Context.** The supply chain does not have one identity story. Contractor staff
+have Entra. Client agencies and independent verifiers have their own IdPs and
+their security teams will not be guested into a vendor tenant. Subcontractors and
+suppliers are frequently ten-person outfits with no enterprise identity at all —
+gate them behind enterprise SSO and they will email PDFs instead, which defeats
+the product. And site tablets are shared: a foreman will not complete an MFA
+challenge thirty times a shift.
+
+**Decision.** A single multi-tenant app registration, and four patterns:
+
+1. **Contractor staff** — home tenant via the multi-tenant registration.
+2. **Client and IV** — *both* federated OIDC (their own issuer, trusted directly
+   via `org_identity_provider`, with home-realm discovery on email domain) *and*
+   B2B guest. Whichever the agency's security posture permits.
+3. **Subcontractors and suppliers** — local credentials (Argon2id) plus TOTP MFA.
+4. **Field devices** — device trust plus per-user unlock.
+
+The device pattern is the one that needs care. A device is **enrolled once as
+trusted** by an authorised user under full MFA; that enrolment event is the strong
+authentication the pattern rests on. A user's first unlock on that device requires
+their **own** full authentication, recorded as `enrolment_auth_event_id` — so the
+PIN is never a way to assert an identity that has not been verified. Thereafter
+the user unlocks with a PIN or, preferably, a platform passkey (the biometric never
+leaves the device and we get a cryptographic assertion rather than a shared
+secret).
+
+**The PIN maps to a user identity, not to the device. It is binding a signature.**
+Every signature carries `authentication_event_id`, so the chain is traceable:
+signature ← unlock ← that user's enrolment on this device ← the MFA login that
+authorised it.
+
+Two hard limits on device-bound sessions:
+
+- **Step-up is required for hold point release** (every kind, retrospective
+  included), conformance certification, client acceptance, concession approval,
+  signature withdrawal, permit conflict override, and all administration. A device
+  PIN is never sufficient for any of these; a passkey assertion or IdP
+  re-authentication is.
+- A device-bound session is **capability-restricted regardless of role**: no role
+  management, no permission grants, no data export, no API keys, no IdP
+  configuration. Intersected at session construction, before any permission check
+  runs.
+
+**Consequences.** `permission.min_auth_strength` becomes a column rather than
+scattered conditionals. Four auth routes is more surface than one, and the device
+enrolment flow is real work in Phase 1. In exchange the product is usable by the
+whole supply chain rather than only by the head contractor's staff, and a signature
+taken on a shared tablet is defensible in an audit.
+
+---
+
+### ADR-0022 — Client lot acceptance is contract-configurable and defaults to not required
+**Status:** Accepted at design review 1 (resolves OQ-2, supersedes assumption A4)
+
+**Context.** The original design required a client signature for a lot to reach
+`Conformed`. Under most TfNSW and D&C arrangements that is wrong: the contractor
+certifies conformance, and the Superintendent engages at hold points, witness
+points, surveillance and audit rather than by signing every lot. On a 4,000-lot
+package no Superintendent's Representative keeps up, and a register that waits for
+them jams permanently.
+
+**Decision.** `contract.client_lot_acceptance_mode` with three values:
+
+- `not_required` — **the default.** `Ready for Review → Conformed` on contractor
+  certification (G15).
+- `nominated_work_types` — required only for work types listed in
+  `contract_acceptance_work_type`; typically structural and geotechnical.
+- `all` — required for every lot.
+
+`client_accepted_at` and `client_acceptance_signature_id` are **attributes of a
+conformed lot, not a state and not a gate.** Where acceptance is required they are
+set at G16 in the same transaction as the transition. Where it is not, a
+Superintendent accepting a batch during surveillance three weeks later sets them
+via G19 with no state change at all. They are the only two columns writable after
+a conformed lot locks, once only, `NULL → value`.
+
+The client retains full authority over an already-conformed lot: `Conformed → Held`
+(G5) on a surveillance stop-work, and `→ Non-Conforming` (G12) with an NCR. Nothing
+about the default mode reduces client control; it removes the client from the
+critical path without removing them from the process.
+
+**Consequences.** The register never blocks on client throughput. The
+§12.7 / §12.9 acceptance demonstration changes shape: the client's involvement is
+shown at the hold and witness points, and the lot conforms on the contractor's
+certification — which is what actually happens on a TfNSW package.

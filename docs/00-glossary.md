@@ -39,3 +39,13 @@ generic construction-software vocabulary disagree, Australian civil practice win
 | **WAE** | Work As Executed. The as-built handover pack. |
 | **MDR** | Manufacturing/Master Data Record — the compiled handover documentation set. |
 | **Supersede** | The only permitted form of deletion. The old record is retained, marked superseded, and linked to the record that replaces it, with a reason. |
+| **Retrospective release** | A hold point released after work has physically proceeded past it. The block was never bypassed — the site moved on and the record is being reconciled. A signed record, not a flag, and always accompanied by a process NCR. |
+| **Verification basis** | On a retrospective release, how the releasing party satisfied themselves the work was conforming once they could no longer see it: contemporaneous evidence, physical reinspection, destructive verification, or none. |
+| **Checkpoint correction** | The Quality Manager's path to fix a mis-signed checkpoint. The original row, its evidence and its signatures are retained; a replacement is created at the same sequence. Correcting a released hold re-blocks it. |
+| **Signature withdrawal** | Setting a signature aside without altering or deleting it. Itself signed, with a reason. An auditor sees a signature that happened and was later withdrawn. |
+| **AHD71** | Australian Height Datum 1971 — the national vertical datum for mainland Australia. Tasmania uses AHD-TAS83. What surveyors deliver levels against. |
+| **Vertical datum** | The named surface a reduced level is measured from. Held on every RL-bearing record, never inferred from a project setting, because an unnamed level is not evidence. |
+| **AUSGeoid2020** | The geoid model that converts a GNSS-derived ellipsoidal height to an AHD height. The difference between it and the earlier AUSGeoid09 is decimetres — enough to fail a correctly built pavement layer. |
+| **Device enrolment** | Registering a shared site device as trusted, performed once by an authorised user under full MFA. Separate from, and a precondition for, a user's per-device PIN or passkey unlock. |
+| **Home-realm discovery** | Routing a login to the correct identity provider based on the user's email domain. How a client agency reaches their own IdP rather than being guested into a contractor tenant. |
+| **Step-up** | Re-authentication at a higher strength (passkey assertion or IdP re-auth) demanded at the moment of a consequential action — releasing a hold point, certifying conformance, accepting a lot. A device PIN never satisfies it. |

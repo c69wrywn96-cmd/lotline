@@ -11,10 +11,12 @@ spine of the data model, not a bolt-on map view.
 
 ## Current status
 
-**Design review — no application code written yet.**
+**Design review round 1 complete — no application code written yet.**
 
 Per §14 of the build brief, the schema, state machines and permission model are
-proposed for review before implementation begins.
+reviewed before implementation begins. Round 1 amended ADR-0004 (vertical datum)
+and ADR-0010 (hold vs witness blocking, record-based clearance) and added
+ADR-0018 … ADR-0022.
 
 | Document | Contents |
 |---|---|
@@ -44,8 +46,13 @@ infrastructure.
 - **No delete.** Ever. Correction is supersession, with a linked reason.
 - **No mock data.** Every screen is wired to real data through real API routes.
 - **The map is the data model**, not a view layer.
-- **Hold points block.** Enforced by a database trigger; the only bypass is a
-  signed, documented concession.
+- **Hold points block. Witness points never do.** Enforced by a database trigger
+  and a CHECK constraint, so a witness point cannot be given a blocking scope by
+  anyone. Clearance is a signed record — standard, concession or retrospective —
+  never a flag.
+- **Every reduced level names its datum.** RL is an explicit attribute against
+  AHD71 or a named local datum, never carried inside geometry. An unnamed level is
+  not evidence.
 - **No reproduction of Australian Standards or client specification text.** The
   library stores clause identifiers, titles and the contractor's own paraphrased
   acceptance criteria. There is no column for source text.

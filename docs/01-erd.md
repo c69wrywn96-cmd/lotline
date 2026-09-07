@@ -1,6 +1,13 @@
 # 01 — Data model / ERD
 
-**Status: proposed, awaiting review. No code written yet.**
+**Status: revised at design review 1. No code written yet.**
+
+> **Revised in this pass:** vertical position is an explicit RL attribute against
+> a named datum, never carried inside geometry (ADR-0018); `access_grant` splits
+> read scope from write scope (OQ-3); `hold_release` gains three release kinds
+> with `retrospective_release` and `checkpoint_correction` as records (ADR-0019);
+> the identity domain gains federated OIDC, local credentials with TOTP, and
+> trusted-device enrolment with per-user unlock (ADR-0021).
 
 Conventions used throughout:
 
@@ -15,7 +22,12 @@ Conventions used throughout:
   application role at the database level.
 - Signed records additionally carry `locked_at`; a `BEFORE UPDATE` trigger
   rejects any change to a locked row other than setting supersession fields.
-- Geometry columns are `geometry(<type>, 7844)` — GDA2020 geographic. See ADR-0004.
+- Geometry columns are `geometry(<type>, 7844)` — GDA2020 geographic, **2D**.
+  See ADR-0004.
+- **Vertical position is never carried in geometry.** Every reduced level is a
+  pair — `<name>_rl_m numeric(9,3)` plus `vertical_datum_id` — with
+  `CHECK ((rl_m IS NULL) = (vertical_datum_id IS NULL))`, so an RL without a
+  named datum cannot exist. See ADR-0018.
 - Money is `numeric(14,2)` + `currency char(3)`. Never float.
 - Quantities are `numeric(14,3)` + `unit_id`. Never float.
 
@@ -47,9 +59,18 @@ erDiagram
     USER_ACCOUNT ||--o{ PERMISSION_GRANT : exception_grant
     USER_ACCOUNT ||--o{ DELEGATION : delegates
     USER_ACCOUNT ||--o{ AUTH_IDENTITY : authenticates_via
-    USER_ACCOUNT ||--o{ DEVICE : registers
+    ORGANISATION ||--o{ ORG_IDENTITY_PROVIDER : federates_via
+    ORG_IDENTITY_PROVIDER ||--o{ AUTH_IDENTITY : issues
+    USER_ACCOUNT ||--o| AUTH_CREDENTIAL : local_password
+    USER_ACCOUNT ||--o{ AUTH_TOTP : second_factor
+    USER_ACCOUNT ||--o{ AUTH_PASSKEY : platform_authenticator
+    DEVICE ||--o{ DEVICE_USER_ENROLMENT : unlocked_by
+    USER_ACCOUNT ||--o{ DEVICE_USER_ENROLMENT : enrols_on
+    USER_ACCOUNT ||--o{ AUTHENTICATION_EVENT : authenticates
+    DEVICE ||--o{ AUTHENTICATION_EVENT : from_device
     ORGANISATION ||--o{ SUBCONTRACT_PACKAGE : awarded
     PROJECT ||--o{ SUBCONTRACT_PACKAGE : contains
+    PROJECT ||--o{ DEVICE : enrolled_on
 
     ORGANISATION {
         uuid id PK
@@ -66,13 +87,95 @@ erDiagram
         text mobile_e164
         text status "invited|active|suspended|departed"
         uuid primary_org_id FK
+        text auth_pattern "home_tenant|federated_oidc|guest_b2b|local_credentials"
+    }
+    ORG_IDENTITY_PROVIDER {
+        uuid id PK
+        uuid organisation_id FK
+        text protocol "oidc|saml2"
+        text issuer UK
+        text client_id
+        text jwks_uri
+        text[] allowed_email_domains
+        boolean enforces_mfa
+        text status "pending|active|suspended"
     }
     AUTH_IDENTITY {
         uuid id PK
         uuid user_id FK
-        text provider "entra|credentials"
+        text provider "entra_home|entra_guest|oidc_federated|local"
+        uuid org_identity_provider_id FK
         text subject UK
-        timestamptz mfa_enrolled_at
+        timestamptz last_authenticated_at
+    }
+    AUTH_CREDENTIAL {
+        uuid id PK
+        uuid user_id FK,UK
+        text password_hash "argon2id"
+        timestamptz must_change_after
+        int failed_attempts
+        timestamptz locked_until
+    }
+    AUTH_TOTP {
+        uuid id PK
+        uuid user_id FK
+        bytea secret_encrypted
+        timestamptz confirmed_at
+        text[] recovery_code_hashes
+        timestamptz revoked_at
+    }
+    AUTH_PASSKEY {
+        uuid id PK
+        uuid user_id FK
+        uuid device_id FK
+        bytea credential_id UK
+        bytea public_key
+        text aaguid
+        text transport "internal|hybrid|usb"
+        int sign_count
+        timestamptz revoked_at
+    }
+    DEVICE {
+        uuid id PK
+        uuid project_id FK
+        text label "e.g. Zone 3 site office tablet 02"
+        text platform
+        text device_fingerprint
+        text enrolment_status "pending|trusted|revoked"
+        text device_secret_hash
+        uuid enrolled_by FK
+        uuid enrolment_auth_event_id FK
+        timestamptz enrolled_at
+        boolean is_shared
+        uuid bound_zone_id FK
+        timestamptz last_attested_at
+        timestamptz revoked_at
+        text revoke_reason
+    }
+    DEVICE_USER_ENROLMENT {
+        uuid id PK
+        uuid device_id FK
+        uuid user_id FK
+        text credential_kind "pin|platform_passkey"
+        text pin_hash "argon2id, per-user salt"
+        uuid enrolment_auth_event_id FK "the full-MFA login that bound this user"
+        int failed_attempts
+        timestamptz locked_until
+        timestamptz enrolled_at
+        timestamptz revoked_at
+    }
+    AUTHENTICATION_EVENT {
+        uuid id PK
+        uuid user_id FK
+        uuid device_id FK
+        text method "idp_primary|idp_reauth|password_totp|device_pin|device_passkey|passkey"
+        text strength "session|device_unlock|step_up"
+        boolean mfa_satisfied
+        boolean device_bound_session
+        inet ip_address
+        text user_agent
+        text result "success|failure|locked_out"
+        timestamptz occurred_at
     }
     PROJECT_PARTICIPANT {
         uuid id PK
@@ -88,16 +191,20 @@ erDiagram
         uuid project_id FK
         uuid user_id FK
         uuid role_id FK
-        text scope_type "project|zone|package|crew|supplier_org"
-        uuid scope_id
+        text read_scope_type "project|zone|wbs|package|crew|supplier_org"
+        uuid read_scope_id
+        text write_scope_type "project|zone|wbs|package|crew|supplier_org|none"
+        uuid write_scope_id
         daterange active_period
         uuid granted_by FK
     }
     ACCESS_GRANT {
         uuid user_id PK
         uuid project_id PK
+        text grant_kind PK "read|write"
         text scope_type PK
         uuid scope_id PK
+        ltree scope_path "zone or wbs subtree"
         text side "contractor|client|verifier|external"
     }
     ROLE {
@@ -107,13 +214,14 @@ erDiagram
         text name
         text side "contractor|client|verifier|external"
         boolean is_system_template
+        boolean grants_project_wide_read
     }
     PERMISSION {
         text code PK "e.g. lot.closeout.approve"
         text resource
         text action
         text description
-        boolean requires_signature
+        text min_auth_strength "session|device_unlock|step_up"
     }
     ROLE_PERMISSION {
         uuid role_id PK
@@ -138,13 +246,6 @@ erDiagram
         tstzrange valid_period
         boolean signature_delegable "always false for hold release"
     }
-    DEVICE {
-        uuid id PK
-        uuid user_id FK
-        text device_fingerprint
-        text platform
-        timestamptz last_seen_at
-    }
     SUBCONTRACT_PACKAGE {
         uuid id PK
         uuid project_id FK
@@ -157,18 +258,22 @@ erDiagram
 | Entity | Purpose | Notes |
 |---|---|---|
 | `organisation` | Any legal entity in the delivery chain. | `is_tenant` marks orgs that can own projects and roles. A subcontractor is an organisation, not a text field on a lot. |
-| `user_account` | Global identity. One human, one row, even if they work for two orgs over time. | Email is the natural key; `citext` so case never forks an identity. |
-| `auth_identity` | Auth method binding. | Separate row per provider so a user can hold Entra SSO and (for field devices without Entra) credentials. |
-| `project_participant` | Which organisations are on this project and in what capacity. | This is what makes a JV expressible: two rows with `participation = lead_contractor` / `jv_partner`, each with its own branding. |
-| `project_membership` | Which user has which role, at what scope, for what period. | Scope narrows a role: a Section Engineer's `scope_type = 'zone'`. Expiry is a date range, so a departed sub's access lapses without a delete. |
-| `access_grant` | Flattened, trigger-maintained projection of `project_membership`. | Exists purely so RLS predicates are one index probe. Never written by application code. `side` drives the client/contractor UI shell split. |
-| `role` | A named bundle of permissions, tenant-customisable. | Ships as system templates matching the org chart in §2; tenants clone and adjust. Not three hardcoded tiers. |
-| `permission` | The action catalogue. | Verb-level, e.g. `checkpoint.hold.release`, `ncr.disposition.use_as_is.approve`. |
-| `role_permission.constraint_json` | Numeric/contextual bounds on a permission. | How "approve NCR closeout > $50k" is expressed without a special-case role. |
-| `permission_grant` | Time-boxed individual exception. | Every one is audited and justified; used for cover during leave, secondments. |
-| `delegation` | Acting-for. | `signature_delegable` is hard-false for hold point release and conformance signature — a delegate cannot sign a hold point. |
-| `device` | Binds a signature to hardware. | Referenced by `signature`; required for the immutable signature record. |
-| `subcontract_package` | The unit a subcontractor is scoped to. | Lots, dockets and NCRs carry `subcontract_package_id`; this is the row-level fence between subs. |
+| `user_account` | Global identity. One human, one row, even across employers over time. | `citext` email so case never forks an identity. `auth_pattern` records which of the four routes below this user takes. |
+| `org_identity_provider` | Per-organisation federated IdP. | Lets a client agency or IV federate their **own** OIDC/SAML issuer rather than being guested into a contractor's tenant — agency security teams will not accept guesting. Home-realm discovery matches `allowed_email_domains` to route the login. |
+| `auth_identity` | One row per authentication route a user holds. | `entra_home` (contractor staff), `entra_guest` (client/IV where guesting is acceptable), `oidc_federated` (client/IV with their own IdP), `local` (subcontractors and suppliers). |
+| `auth_credential` / `auth_totp` | Local password + TOTP for organisations with no enterprise identity. | Argon2id; TOTP secret encrypted at rest. Ten-person subcontractors are the majority of the supply chain; gating them behind enterprise SSO pushes them back to emailing PDFs, which defeats the product. |
+| `auth_passkey` | WebAuthn platform authenticator. | Preferred over a PIN wherever the device supports it: the biometric never leaves the device and we get a cryptographic assertion rather than a shared secret. |
+| `device` | A physical site device, enrolled once as trusted. | Enrolment is performed by an authorised user under full MFA (`enrolment_auth_event_id`), which is the strong authentication event the whole device pattern rests on. `is_shared` marks site tablets. Revocation is immediate and total. |
+| `device_user_enrolment` | Binds one user to one trusted device with a PIN or platform passkey. | **The PIN maps to a user identity, not to the device** — it is binding a signature. A user's first unlock on a device requires their own full authentication (`enrolment_auth_event_id`), so the PIN is never a way to assert an identity that has not been verified. Rate-limited with lockout; useless off the enrolled device. |
+| `authentication_event` | Every authentication and unlock, with its strength. | `signature.authentication_event_id` points here, so an auditor can trace a signature back through the unlock, to the user's enrolment, to the MFA login that authorised it. This is what makes a shared-tablet signature defensible. |
+| `project_participant` | Which organisations are on this project, in what capacity. | What makes a JV expressible: two rows, `lead_contractor` and `jv_partner`, each with its own branding and user pool. |
+| `project_membership` | Which user has which role, at what **read** and **write** scope, for what period. | The split is the JV answer (OQ-3): a partner's engineers read the whole project and write their own sections. Expiry is a date range, so a departed sub's access lapses without a delete. |
+| `access_grant` | Flattened, trigger-maintained projection of `project_membership`. | Exists purely so RLS predicates are one index probe. `grant_kind` separates read from write; `scope_path` carries the zone/WBS subtree as `ltree` so containment is a GiST probe, not recursion. Never written by application code. `side` drives the client/contractor UI shell split. |
+| `role.grants_project_wide_read` | Whether this role's memberships yield a `read/project` grant. | False for every `side='external'` template, and the membership trigger asserts it — a subcontractor or supplier membership can never produce project-wide read. |
+| `permission.min_auth_strength` | The authentication floor for this action. | How "a hold point release needs step-up, a photo upload does not" is data rather than scattered conditionals. |
+| `permission_grant` | Time-boxed individual exception. | Audited and justified; used for leave cover and secondments. |
+| `delegation` | Acting-for. | `signature_delegable` is hard-false for hold release and conformance certification — a delegate cannot release a hold point. |
+| `subcontract_package` | The unit a subcontractor is scoped to. | Lots, dockets, checkpoints and NCRs carry `subcontract_package_id`; this is the row-level fence between subs. |
 
 ---
 
@@ -192,6 +297,9 @@ erDiagram
     PROJECT ||--o{ MAP_LAYER : overlays
     MAP_LAYER ||--o{ MAP_LAYER_CAPTURE : dated_captures
     PROJECT ||--o{ COORDINATE_SYSTEM : declares
+    PROJECT ||--o{ VERTICAL_DATUM : declares_levels_against
+    CONTRACT ||--o{ CONTRACT_ACCEPTANCE_WORK_TYPE : nominates
+    WORK_TYPE ||--o{ CONTRACT_ACCEPTANCE_WORK_TYPE : nominated_in
 
     PROJECT {
         uuid id PK
@@ -201,7 +309,7 @@ erDiagram
         text status "tender|delivery|defects_liability|closed"
         int mga_zone "49..56"
         int project_srid "7849..7856"
-        text vertical_datum "AHD71"
+        uuid default_vertical_datum_id FK "a default for new records, never an inferred value"
         daterange delivery_period
         date defects_liability_end
     }
@@ -212,7 +320,25 @@ erDiagram
         uuid superintendent_user_id FK
         uuid verifier_org_id FK
         text spec_suite "TfNSW|DTP_VIC|TMR_QLD|MRWA|custom"
+        text client_lot_acceptance_mode "not_required|nominated_work_types|all"
+        boolean discloses_cost_impact
+        boolean client_approves_materials
+        boolean client_approves_design_changes
         int retention_years
+    }
+    CONTRACT_ACCEPTANCE_WORK_TYPE {
+        uuid contract_id PK
+        uuid work_type_id PK
+        text rationale
+    }
+    VERTICAL_DATUM {
+        uuid id PK
+        uuid project_id FK "null = system reference datum"
+        text code "AHD71|AHD_TAS83|LOCAL|ASSUMED"
+        text name "Australian Height Datum 1971"
+        text realisation_note
+        boolean is_local
+        uuid local_origin_benchmark_id FK
     }
     ZONE {
         uuid id PK
@@ -304,6 +430,9 @@ erDiagram
 | Entity | Purpose | Notes |
 |---|---|---|
 | `project.mga_zone` / `project_srid` | The project's working projected CRS. | Held explicitly. Areas, lengths and quantities are computed in this SRID, not on geography — so they match the surveyor's numbers. |
+| `vertical_datum` | The named datum every RL in the system is measured against. | Surveyors hand over AHD; an unnamed level is not evidence. Mainland projects use AHD71, Tasmania AHD-TAS83, and a surprising number of sites work to a local or assumed datum tied to a site benchmark — `is_local` plus `local_origin_benchmark_id` makes that explicit rather than a footnote in a survey report. **`project.default_vertical_datum_id` seeds new records; it is never used to interpret a stored RL** — every RL carries its own datum. |
+| `contract.client_lot_acceptance_mode` | Whether the client signs individual lots. | Three modes (`not_required` default / `nominated_work_types` / `all`), resolved by `client_lot_acceptance_required(lot)`. On a 4,000-lot package no Superintendent's Rep signs every lot, and a register that waits for them jams permanently — so the contractor certifies and the client engages at hold points, witness points, surveillance and audit. |
+| `contract_acceptance_work_type` | The nomination list for the middle mode. | Typically structural and geotechnical work types where the client wants individual acceptance and nothing else. |
 | `contract` | The commercial frame: client, superintendent, spec suite, retention. | Drives which specification suite the standards library defaults to, and the retention/archive horizon. |
 | `zone` | Geographic/organisational subdivision, nestable. | Carries both a boundary polygon *and* an optional chainage range; road projects think in chainage, structures projects think in polygons, and both are valid. |
 | `wbs_element` | Scope decomposition tree. | `ltree path` so "everything under WBS 3.2" is one indexed query, not recursion. |
@@ -438,6 +567,13 @@ erDiagram
     ITP_CHECKPOINT ||--o{ SIGNATURE : signed_by
     ITP_CHECKPOINT ||--o{ CONCESSION : bypassed_under
     ITP_CHECKPOINT ||--o{ CHECKPOINT_STATE_EVENT : transitions
+    HOLD_RELEASE ||--o| CONCESSION : under_concession
+    HOLD_RELEASE ||--o| RETROSPECTIVE_RELEASE : recorded_late_via
+    RETROSPECTIVE_RELEASE ||--o{ RETROSPECTIVE_VERIFICATION_EVIDENCE : relies_on
+    RETROSPECTIVE_RELEASE ||--|| NCR : raises_process_ncr
+    ITP_CHECKPOINT ||--o{ CHECKPOINT_CORRECTION : corrected_by
+    CHECKPOINT_CORRECTION ||--o{ SIGNATURE_WITHDRAWAL : withdraws
+    ITP_CHECKPOINT ||--o{ ITP_CHECKPOINT : supersedes
 
     ITP_MASTER {
         uuid id PK
@@ -469,7 +605,7 @@ erDiagram
         int notice_hours
         text frequency_basis "per_lot|per_area|per_volume|per_delivery|per_day|per_length"
         numeric frequency_value
-        text blocking_scope "all_subsequent|none"
+        text blocking_scope "all_subsequent|none, CHECK: all_subsequent only when type=hold"
     }
     ITP_INSTANCE {
         uuid id PK
@@ -496,7 +632,11 @@ erDiagram
         uuid assigned_to FK
         uuid subcontract_package_id FK
         timestamptz completed_at
+        text blocking_scope "all_subsequent|none, CHECK: all_subsequent only when type=hold"
         boolean is_blocking
+        int reinspection_count
+        uuid corrected_from_id FK
+        uuid superseded_by_id FK
         timestamptz locked_at
     }
     CHECKPOINT_EVIDENCE_REQ {
@@ -530,12 +670,56 @@ erDiagram
     }
     HOLD_RELEASE {
         uuid id PK
+        uuid project_id FK
         uuid itp_checkpoint_id FK
+        text release_kind "standard|concession|retrospective"
         uuid released_by FK
-        uuid signature_id FK
+        uuid signature_id FK "NOT NULL for every kind"
         timestamptz released_at
         text conditions
-        uuid concession_id FK
+        uuid concession_id FK "NOT NULL iff kind=concession"
+        uuid retrospective_release_id FK "NOT NULL iff kind=retrospective"
+        uuid superseded_by_id FK
+    }
+    RETROSPECTIVE_RELEASE {
+        uuid id PK
+        uuid project_id FK
+        uuid itp_checkpoint_id FK
+        timestamptz work_proceeded_at
+        timestamptz released_at
+        interval retrospective_lag "generated"
+        text discovery_method "self_identified|internal_audit|client_surveillance|verifier_audit|system_reconciliation"
+        text verification_basis "contemporaneous_evidence|physical_reinspection|destructive_verification|none"
+        text justification
+        uuid raised_ncr_id FK
+        uuid recorded_by FK
+    }
+    RETROSPECTIVE_VERIFICATION_EVIDENCE {
+        uuid id PK
+        uuid retrospective_release_id FK
+        text subject_type "photo|test_result|survey_conformance|document"
+        uuid subject_id
+    }
+    CHECKPOINT_CORRECTION {
+        uuid id PK
+        uuid project_id FK
+        uuid itp_checkpoint_id FK "the row being superseded"
+        uuid replacement_checkpoint_id FK
+        text correction_kind "wrong_checkpoint_signed|wrong_signatory|incorrect_evidence_attached|data_entry_error"
+        text reason
+        uuid corrected_by FK
+        uuid signature_id FK
+        timestamptz corrected_at
+    }
+    SIGNATURE_WITHDRAWAL {
+        uuid id PK
+        uuid project_id FK
+        uuid signature_id FK,UK "the signature set aside; never altered or deleted"
+        uuid checkpoint_correction_id FK
+        text reason
+        uuid withdrawn_by FK
+        uuid withdrawal_signature_id FK
+        timestamptz withdrawn_at
     }
     CONCESSION {
         uuid id PK
@@ -567,7 +751,10 @@ erDiagram
 | `itp_checkpoint.blocking_scope` | How a hold gates the ITP. | `all_subsequent` (default for hold points) is enforced by trigger; see `02-state-machines.md` §4. |
 | `checkpoint_evidence_req` vs `checkpoint_evidence` | Required vs supplied. | The gap between them is exactly what stops a lot reaching `Ready for Review`. |
 | `witness_notification` | The claim-critical clock. | `notified_at`, `required_notice_hours` and `notice_satisfied_at` are written once and locked. Outcome is recorded, never assumed. |
-| `hold_release` | The release act. | Always carries a `signature_id`. `concession_id` is non-null only where a hold was cleared other than by normal release — which is the only permitted bypass and is itself a signed record. |
+| `hold_release` | **The single clearance record the blocking trigger looks for.** | Three `release_kind`s — `standard`, `concession`, `retrospective` — each requiring `signature_id` and exactly one supporting record, enforced by CHECK. The trigger asks "does a signed clearance row exist", never "is a flag set". All three appear on the conformance pack. None relaxes *who* may release. |
+| `retrospective_release` | A hold released after work physically proceeded past it. | The honest model of a real event: the trigger was never bypassed — the block held, the site moved on, and the record is being reconciled. `verification_basis` records how the releasing party satisfied themselves the work was conforming once they could no longer see it; evidence is mandatory unless the basis is `none`. Always raises a process NCR. `retrospective_lag` and `discovery_method` feed the trend engine, so a crew that repeatedly outruns its hold points becomes visible. |
+| `checkpoint_correction` | The QM's path to fix a mis-signed checkpoint. | Supersession, never mutation: the original checkpoint, its evidence and its signatures are all retained; a replacement row is created at the same sequence. **If the corrected checkpoint is a hold, its replacement has no clearance record and re-blocks immediately** — a correction cannot launder a hold point. |
+| `signature_withdrawal` | Sets a signature aside without touching it. | The signature row is insert-only and is never altered or deleted. The withdrawal is itself signed, with a reason. An auditor sees a signature that happened and was later withdrawn, which is the truth. |
 | `concession` | The documented exception. | Requires an Engineering Manager signature and, for Use As Is / Repair dispositions, a client signature and an attached document. |
 
 ---
@@ -607,15 +794,21 @@ erDiagram
         text lot_number UK
         text status
         text conformance_qualifier "full|with_concession"
-        geometry geom "Geometry 7844, CHECK type in Polygon/MultiPolygon/LineString/Point"
+        geometry geom "Geometry 7844, 2D only, CHECK type in Polygon/MultiPolygon/LineString/Point"
         int source_srid
-        geometry geom_source "as-imported, untransformed"
+        geometry geom_source "as-imported, untransformed, may carry Z as provenance"
+        ltree zone_path "materialised, for RLS scope containment"
+        ltree wbs_path "materialised, for RLS scope containment"
         uuid alignment_id FK
         numrange chainage_range_m
         text offset_side "LHS|RHS|CL"
         numrange offset_range_m
-        numeric rl_top_m
-        numeric rl_bottom_m
+        numeric design_rl_top_m "numeric(9,3)"
+        numeric design_rl_bottom_m
+        numeric surveyed_rl_top_m
+        uuid vertical_datum_id FK "NOT NULL whenever any rl is non-null"
+        numeric level_deviation_mm
+        numeric level_tolerance_mm
         numeric quantity
         uuid unit_id FK
         numeric computed_area_m2 "ST_Area in project_srid"
@@ -623,6 +816,8 @@ erDiagram
         date raised_on
         date target_conformance_date
         timestamptz first_hold_blocked_at
+        timestamptz client_accepted_at "attribute of a conformed lot, not a state"
+        uuid client_acceptance_signature_id FK
         uuid superseded_by_id FK
         timestamptz locked_at
     }
@@ -632,6 +827,8 @@ erDiagram
         int revision_no
         geometry geom
         int source_srid
+        numeric surveyed_rl_top_m
+        uuid vertical_datum_id FK
         text reason
         uuid survey_conformance_id FK
         uuid changed_by FK
@@ -641,9 +838,13 @@ erDiagram
         uuid lot_id FK
         text layer_code "subgrade|select_fill|sbc|base|wearing_course"
         int stack_order
-        numeric rl_top_m
-        numeric rl_bottom_m
+        numeric design_rl_top_m "numeric(9,3)"
+        numeric design_rl_bottom_m
+        numeric surveyed_rl_top_m
+        uuid vertical_datum_id FK "NOT NULL whenever any rl is non-null"
         numeric design_thickness_mm
+        numeric surveyed_thickness_mm
+        numeric thickness_tolerance_mm
     }
     LOT_STATE_EVENT {
         uuid id PK
@@ -710,7 +911,10 @@ erDiagram
 
 | Entity | Purpose | Notes |
 |---|---|---|
-| `lot.geom` + `geom_source` + `source_srid` | Canonical GDA2020 geographic plus the untransformed import. | The source is retained so survey data can be round-tripped without accumulated reprojection error, and so a datum dispute is resolvable from the record. |
+| `lot.geom` + `geom_source` + `source_srid` | Canonical GDA2020 geographic (2D) plus the untransformed import. | The source is retained so survey data round-trips without accumulated reprojection error, and so a horizontal datum dispute is resolvable from the record. |
+| `lot.*_rl_m` + `vertical_datum_id` | **Vertical position, named.** | An earthworks or pavement lot is defined by RL as much as by plan position — subgrade at RL 32.450, SBC at RL 32.600. Levels are stored as explicit attributes against a named datum, never inside the geometry, because a geographic CRS carries no vertical datum and an unnamed level is not evidence (ADR-0018). Design, surveyed, deviation and tolerance are separate columns so conformance is computed, not asserted. |
+| `lot.zone_path` / `wbs_path` | Materialised `ltree` paths. | Maintained by trigger. Lets an RLS write-scope grant over WBS 3.2 cover 3.2.1.4 as a GiST containment probe rather than a recursive subquery per row. |
+| `lot.client_accepted_at` | Client acceptance as an attribute. | Set at G16 where acceptance gates conformance, or later at G19 where it does not. One of only two columns writable after a conformed lot locks, and only once. |
 | `lot.chainage_range_m` / `offset_side` / `offset_range_m` | The engineer's address for the lot. | `numrange` gives GiST-indexed overlap queries: "every lot at CH 1450" is a range containment probe, not a scan. |
 | `lot_layer` | The pavement layer-cake. | Lets the map answer "same footprint, which layer" and gives the vertical stack at a chainage. |
 | `lot_geometry_revision` | Geometry changes when the surveyor re-measures. | Append-only; the current `lot.geom` is the latest revision. Nothing is overwritten silently. |
@@ -762,7 +966,9 @@ erDiagram
         geometry taken_at_point "Point 7844"
         numeric chainage_m
         numeric offset_m
-        numeric rl_m
+        numeric rl_m "numeric(9,3)"
+        uuid vertical_datum_id FK "NOT NULL when rl_m is non-null"
+        uuid lot_layer_id FK "which layer of the cake was sampled"
         timestamptz sampled_at
         uuid sampled_by FK
     }
@@ -866,7 +1072,7 @@ erDiagram
 
 | Entity | Purpose | Notes |
 |---|---|---|
-| `test_sample` | Where the sample was physically taken. | Has geometry. This is what puts test locations on the map and lets a failure be traced to a place, not just a lot. |
+| `test_sample` | Where the sample was physically taken — in plan **and** in level. | Has geometry, a named-datum RL, and a link to the pavement layer sampled. This puts test locations on the map, lets a failure be traced to a place rather than just a lot, and makes "which layer did this density test actually prove" answerable — which matters when three lots share one footprint. |
 | `test_result_value` | One measured parameter per row. | Not a JSON blob — because acceptance statistics aggregate across results by parameter, and that must be a SQL aggregate on an indexed column. |
 | `lot_acceptance_evaluation` | The statistical verdict, stored. | Recomputed on each new result; each run is a row, so the evaluation history is auditable. `triggered_ncr_id` is the §12.5 auto-raise link. |
 | `delivery_docket.compliance_state` | Automated docket check. | `discharge_time_exceeded` derives from `discharged_at - batched_at` against `mix_design.max_discharge_minutes` — the 90-minute rule as data, not a hardcoded 90. |
@@ -979,9 +1185,13 @@ erDiagram
         text survey_type "conformance|setout|as_built"
         uuid surveyor_id FK
         int source_srid
-        geometry surveyed_extent "Geometry 7844"
-        numeric max_deviation_mm
-        numeric tolerance_mm
+        uuid vertical_datum_id FK "the datum the surveyor delivered against"
+        text geoid_model "AUSGeoid2020|AUSGeoid09|none_direct_levelling"
+        geometry surveyed_extent "Geometry 7844, 2D"
+        numeric max_horizontal_deviation_mm
+        numeric max_vertical_deviation_mm
+        numeric horizontal_tolerance_mm
+        numeric vertical_tolerance_mm
         text outcome "conforming|non_conforming"
         uuid document_id FK
         uuid landxml_document_id FK
@@ -1069,7 +1279,7 @@ erDiagram
 | `ncr_disposition` | Separate from the NCR so a rejected proposal is retained. | `use_as_is` / `repair` cannot reach `client_approved` without `client_concession_id` — enforced by a table CHECK, not app code. |
 | `ncr_cost_impact.is_commercially_sensitive` | Drives restricted-read auditing. | Sub-tier users never see cost impact; every read by anyone is logged. |
 | `rfi.sla_due_at` / `sla_breached` | Client response clocks. | Computed on issue, evaluated by a scheduled job; a breach is a fact with a timestamp, not a UI badge. |
-| `survey_conformance.source_srid` | Survey data arrives in MGA. | Stored with its own SRID; never assumed from the project default. |
+| `survey_conformance.source_srid` / `vertical_datum_id` / `geoid_model` | Survey data arrives in MGA horizontally and AHD vertically. | Both are stored with the record, never assumed from the project default. `geoid_model` matters because a GNSS-derived height is ellipsoidal until a geoid model converts it to AHD, and the difference between AUSGeoid2020 and AUSGeoid09 is decimetres — enough to fail a pavement layer that was actually built correctly. Horizontal and vertical deviations and tolerances are tracked separately because they have different acceptance criteria. |
 | `weather_observation` | BoM auto-population for diaries. | Raw payload retained — wet-weather claims are argued from source data. |
 | `competency_record.is_personal_sensitive` | Personal information flag. | Restricts read and forces audit logging; permits reference these records for sign-on eligibility. |
 
@@ -1133,8 +1343,10 @@ erDiagram
         uuid zone_id FK
         text permit_number UK
         text status "draft|submitted|prerequisites_pending|awaiting_approval|approved|active|suspended|expired|closed|cancelled"
-        geometry authorised_area "Polygon 7844"
-        numeric depth_limit_m
+        geometry authorised_area "Polygon 7844, 2D"
+        numeric depth_limit_rl_m "numeric(9,3), the RL below which this permit does not authorise"
+        uuid vertical_datum_id FK "NOT NULL when depth_limit_rl_m is non-null"
+        numeric depth_limit_below_surface_m "alternative expression where no RL is available"
         tstzrange validity
         uuid requested_by FK
         uuid responsible_supervisor_id FK
@@ -1207,8 +1419,10 @@ erDiagram
         uuid project_id FK
         text utility_type "electricity|gas|water|sewer|telecom|fuel"
         text status "plan_only|located|potholed"
-        geometry geom "LineString or Point 7844"
-        numeric rl_m
+        geometry geom "LineString or Point 7844, 2D"
+        numeric rl_m "numeric(9,3), potholed invert or obvert"
+        uuid vertical_datum_id FK "NOT NULL when rl_m is non-null"
+        text rl_reference "invert|obvert|centreline"
         numeric protection_zone_m
         uuid evidence_document_id FK
     }
@@ -1231,6 +1445,8 @@ erDiagram
     DOCUMENT ||--o{ SIGNATURE : signed
     USER_ACCOUNT ||--o{ SIGNATURE : signs
     DEVICE ||--o{ SIGNATURE : from_device
+    AUTHENTICATION_EVENT ||--o{ SIGNATURE : authorised_by
+    SIGNATURE ||--o| SIGNATURE_WITHDRAWAL : set_aside_by
     PROJECT ||--o{ AUDIT_LOG_ENTRY : records
     USER_ACCOUNT ||--o{ AUDIT_LOG_ENTRY : actor
     PROJECT ||--o{ NOTIFICATION : emits
@@ -1274,10 +1490,13 @@ erDiagram
         text subject_type
         uuid subject_id
         text subject_hash "sha256 of the exact content signed"
-        text signature_method "click_to_sign|drawn|entra_reauth"
+        text signature_method "click_to_sign|drawn|idp_reauth|passkey|device_pin|device_biometric"
+        text auth_strength "session|device_unlock|step_up"
+        uuid authentication_event_id FK "the unlock that authorised this signature"
         text drawn_image_key
         inet ip_address
         uuid device_id FK
+        boolean device_bound_session
         text user_agent
         uuid acting_role_id FK
         uuid delegation_id FK
@@ -1296,6 +1515,8 @@ erDiagram
         inet ip_address
         text user_agent
         uuid request_id
+        uuid device_id
+        uuid auth_event_id
         timestamptz occurred_at
     }
     NOTIFICATION {
@@ -1371,7 +1592,7 @@ erDiagram
 |---|---|---|
 | `document_revision.pdf_render_key` | Pre-rendered PDF of every uploaded artefact. | Rendered asynchronously at ingest. Conformance pack generation then becomes merge + index + stamp, which is how the <10 s target is met. See ADR-0009. |
 | `document_revision.sha256` | Content address. | Deduplicates identical uploads and is what `signature.subject_hash` binds to. |
-| `signature` | The single signature table for the whole system. | Binds user, purpose, subject, **exact content hash**, method, IP, device, user agent, the role being acted in, and any delegation. Insert-only: `UPDATE` and `DELETE` are revoked. |
+| `signature` | The single signature table for the whole system. | Binds user, purpose, subject, **exact content hash**, method, authentication strength, the `authentication_event` that authorised it, IP, device, the role being acted in, and any delegation. Insert-only: `UPDATE` and `DELETE` are revoked; a signature is set aside by a `signature_withdrawal`, never altered. The `authentication_event_id` link is what makes a signature taken on a shared site tablet defensible — it traces back through the PIN or passkey unlock to the user's own MFA enrolment on that device. |
 | `audit_log_entry` | Append-only log of every mutation, restricted read, and export. | `bigint` PK on a monthly-partitioned table. Written by database trigger, not application code, so it cannot be bypassed. See `04-rls-and-enforcement.md`. |
 | `sync_operation.client_op_id` | Offline idempotency key. | Replaying a batch is safe. Signature operations never resolve automatically — they raise a `sync_conflict` for human resolution (§7 requirement). |
 | `export_record` | Every export, with its filter criteria. | An auditor asking "what did this person take, and when" is answerable. |
@@ -1389,4 +1610,8 @@ erDiagram
 | Permit conflict detection | `permit USING gist (authorised_area)` + `permit USING gist (validity)`; conflict query is a spatial join with a range overlap predicate. |
 | Hold point blocking check | `itp_checkpoint (itp_instance_id, sequence_no)` with `state` included. |
 | Audit log retrieval | monthly `RANGE` partition on `occurred_at`; `(project_id, subject_type, subject_id)` per partition. |
-| Subcontractor RLS | `access_grant (user_id, project_id, scope_type, scope_id)` — the PK, used by every policy. |
+| Subcontractor and JV RLS | `access_grant (user_id, project_id, grant_kind, scope_type, scope_id)` — the PK, used by every policy; plus `access_grant USING gist (scope_path)` for zone/WBS subtree containment. |
+| Zone/WBS scope containment | `lot USING gist (zone_path)`, `lot USING gist (wbs_path)` — so a write-scope check on a nested WBS element is a containment probe, not recursion. |
+| Hold clearance lookup | `hold_release (itp_checkpoint_id) WHERE superseded_by_id IS NULL` — hit once per candidate row by the blocking predicate, so it must be a single-row index probe. |
+| Live checkpoint per sequence | unique `(itp_instance_id, sequence_no) WHERE superseded_by_id IS NULL`. |
+| Signature audit chain | `signature (authentication_event_id)`, `authentication_event (user_id, device_id, occurred_at)`. |

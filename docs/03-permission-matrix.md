@@ -1,6 +1,12 @@
 # 03 — Permission matrix (role × action)
 
-**Status: proposed, awaiting review.**
+**Status: revised at design review 1.**
+
+> **Revised in this pass:** scope is now read/write-split, so the "Default scope"
+> column below reads *read scope / write scope* (OQ-3); new permissions cover the
+> late-release and correction paths (§2), contractor conformance certification
+> (§1), device enrolment (§8); every permission carries a minimum authentication
+> strength (§10).
 
 These are **system role templates**, not hardcoded tiers. A tenant clones a
 template into its own `role` row and adjusts `role_permission` freely. Nothing in
@@ -19,24 +25,34 @@ the application branches on a role name; every check is
 
 ## Roles and their default scope
 
-| Code | Role | Side | Default scope | Notes |
-|---|---|---|---|---|
-| **PD** | Project Director | contractor | project | |
-| **CM** | Construction Manager | contractor | project | |
-| **EM** | Engineering Manager | contractor | project | |
-| **QM** | Quality Manager | contractor | project | System configuration owner |
-| **ENV** | Environmental / Sustainability Manager | contractor | project | |
-| **WHS** | WHS Manager | contractor | project | Permit system owner |
-| **SR** | Superintendent's Representative | **client** | project (read-mostly) | Distinct UI shell |
-| **IV** | Independent Verifier / ITA | **verifier** | project (read + sign) | Distinct UI shell |
-| **PE** | Package / Section Engineer | contractor | zone | |
-| **SE** | Site / Project Engineer | contractor | zone | |
-| **CAD** | Undergraduate / Cadet Engineer | contractor | zone | Cannot sign hold or witness points |
-| **FMN** | Foreman / Supervisor | contractor | crew | Mobile-first |
-| **SUR** | Surveyor | contractor | project | |
-| **SUB** | Subcontractor | external | **package** | Row-level fenced from other subs |
-| **SUP** | Supplier | external | **own deliveries** | Sees no lots at all |
-| **AUD** | Client Stakeholder / Auditor | client | project | Read + export, zero write |
+Scope is now two independent grants. On a joint venture, a partner's engineers
+read the whole project and write only their assigned sections — a JV delivers one
+contract under one QMS with one ITP library, so partner-segregated QA data would
+be a fiction, but each partner's engineers own their geography.
+
+| Code | Role | Side | Read scope | Write scope | Notes |
+|---|---|---|---|---|---|
+| **PD** | Project Director | contractor | project | project | |
+| **CM** | Construction Manager | contractor | project | project | |
+| **EM** | Engineering Manager | contractor | project | project | |
+| **QM** | Quality Manager | contractor | project | project | System configuration owner |
+| **ENV** | Environmental / Sustainability Manager | contractor | project | project | |
+| **WHS** | WHS Manager | contractor | project | project | Permit system owner |
+| **SR** | Superintendent's Representative | **client** | project | project | Narrowed by permissions, not scope. Distinct UI shell |
+| **IV** | Independent Verifier / ITA | **verifier** | project | **none** | Read + sign only. Distinct UI shell |
+| **PE** | Package / Section Engineer | contractor | project | **zone / WBS subtree** | The JV case: sees everything, writes their sections |
+| **SE** | Site / Project Engineer | contractor | project | **zone / WBS subtree** | |
+| **CAD** | Undergraduate / Cadet Engineer | contractor | project | **zone** | Cannot sign hold or witness points |
+| **FMN** | Foreman / Supervisor | contractor | project | **crew** | Mobile-first |
+| **SUR** | Surveyor | contractor | project | project | |
+| **SUB** | Subcontractor | external | **package** | **package** | Never project-wide read. Fenced from other subs |
+| **SUP** | Supplier | external | **own deliveries** | **own deliveries** | Sees no lots at all |
+| **AUD** | Client Stakeholder / Auditor | client | project | **none** | Read + export, zero write |
+
+The read/write split applies to **contractor-, client- and verifier-side roles
+only**. An `external` membership (subcontractor, supplier) produces narrow grants
+for *both* kinds — there is a database-level assertion that no external membership
+ever yields a project-wide read grant (`04-rls-and-enforcement.md` §3.2).
 
 ---
 
@@ -52,6 +68,7 @@ the application branches on a role name; every check is
 | `lot.assign` | | ● | ● | ● | | | | | ● | | | | | | | |
 | `lot.bulk_create` | | ● | ● | ● | | | | | ● | | | | | | | |
 | `lot.submit` | | ● | ● | ● | | | | | ● | ● | | | | | | |
+| `lot.certify_conformance` | | | ● | ▲27 | | | | | | | | | | | | |
 | `lot.closeout.approve` | ● | ● | | | | | | | | | | | | | | |
 | `lot.accept` | | | | | | | ● | | | | | | | | | |
 | `lot.reject` | | | | | | | ● | | | | | | | | | |
@@ -78,6 +95,9 @@ the application branches on a role name; every check is
 | `checkpoint.witness.notify` | | ● | ● | ● | ● | | | | ● | ● | ● | | | | | |
 | `checkpoint.witness.record_outcome` | | | | ▲10 | | | ● | ● | | | | | | | | |
 | `checkpoint.mark_not_applicable` | | | ● | ● | | | | | | | | | | | | |
+| `checkpoint.hold.release.retrospective` | | ▲9 | ▲9 | ▲9 | ▲9 | ▲9 | ▲9 | ▲9 | | | | | | | | |
+| `checkpoint.correct` | | | ▲28 | ● | | | | | | | | | | | | |
+| `signature.withdraw` | | | ▲28 | ● | | | | | | | | | | | | |
 | `concession.request` | | ● | ● | ● | | | | | ● | ● | | | | | | |
 | `concession.approve.em` | | | ● | | | | | | | | | | | | | |
 | `concession.approve.client` | | | | | | | ● | | | | | | | | | |
@@ -183,6 +203,10 @@ the application branches on a role name; every check is
 | `admin.standards.manage` | | | ● | ● | | | | | | | | | | | | |
 | `admin.acceptance_scheme.manage` | | | ● | ● | | | | | | | | | | | | |
 | `admin.integration.configure` | | | | ● | | | | | | | | | | | | |
+| `admin.idp.configure` | | | | ● | | | | | | | | | | | | |
+| `admin.device.enrol` | | ● | | ● | | ● | | | ● | | | | | | | |
+| `admin.device.revoke` | | ● | | ● | | ● | | | ● | | | | | | | |
+| `admin.device.user_enrol` | | ● | ● | ● | ● | ● | | | ● | ● | | | | | | |
 | `api.key.manage` | | | | ● | | | | | | | | | | | | |
 
 ---
@@ -217,7 +241,11 @@ the application branches on a role name; every check is
    checkpoint's `release_role_id` and their `access_grant.side` to match the
    checkpoint's `responsible_party`. So a client hold point is releasable only by
    SR/IV, and a contractor hold point only by the nominated contractor role.
-   Never delegable.
+   Never delegable. **This holds identically for
+   `checkpoint.hold.release.retrospective`** — a late release is still a release,
+   and lateness never relaxes who may sign it. The separate permission exists so a
+   tenant can require a deliberate grant for the retrospective path and can report
+   on who holds it, not so that a different set of people can use it.
 10. QM may record a witness outcome only to log a **client-communicated** outcome
     (e.g. a phone decline), and the record captures QM as recorder and the client
     contact as source. QM cannot record `attended`.
@@ -263,6 +291,12 @@ the application branches on a role name; every check is
 26. Project Director may configure a project and manage users only where the
     tenant has not appointed a QM — the template ships with these off, so
     configuration authority is unambiguous.
+27. QM may certify lot conformance only where the contract nominates the Quality
+    Manager rather than the Engineering Manager as the certifying signatory. Off by
+    default.
+28. EM may correct a checkpoint and withdraw a signature only within their own
+    discipline, and never a signature they themselves made — a signatory cannot
+    withdraw their own signature. QM is the unrestricted holder.
 
 ---
 
@@ -290,3 +324,34 @@ Steps 2, 7 and 8 are enforced **in the database**. The application layer's
 `can()` exists to render the UI correctly and to return good error messages; it
 is never the only barrier. A hostile client with a valid session and a raw SQL
 connection still cannot release a hold point it is not nominated for.
+
+Step 4 now resolves against **two** grants. A read is checked against the user's
+`read` grants; an insert or update against their `write` grants. Where a row is
+readable but not writable — a JV partner looking at another partner's zone — the
+database raises a policy violation rather than hiding the row, and the application
+surfaces "outside your assigned sections". Where a row is not readable at all, the
+answer is "not found": absence must not leak existence.
+
+---
+
+## 10. Minimum authentication strength per permission
+
+`permission.min_auth_strength` is a column, not scattered conditionals. Three
+levels, resolved from OQ-8 and OQ-12:
+
+| Level | Satisfied by | Applies to |
+|---|---|---|
+| `session` | Any active session, including a device-bound session unlocked by PIN | Reads, exports of non-restricted data, photo capture, docket upload, diary entry, evidence attach |
+| `device_unlock` | A per-user unlock on the current device (PIN or platform passkey), or a full IdP session | Signing `record`, `surveillance` and `review` checkpoints; permit sign-on |
+| `step_up` | Platform passkey assertion or IdP re-authentication. **A device PIN is never sufficient.** | Releasing a hold point (every kind, retrospective included); certifying lot conformance; client lot acceptance; approving a concession; withdrawing a signature; overriding a permit conflict; any `admin.*` permission |
+
+A **device-bound session is capability-restricted regardless of role**: no role
+management, no permission grants, no data export, no API key access, no IdP
+configuration. A Quality Manager signed in on a shared site tablet holds their
+field permissions and nothing else. This is enforced at session construction —
+the capability set is intersected with the device-bound allowlist before any
+`can()` call runs.
+
+Every signature records the `authentication_event` that authorised it, so a
+signature made at insufficient strength is detectable by query after the fact, and
+the acceptance suite asserts that none exist.
