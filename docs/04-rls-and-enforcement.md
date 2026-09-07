@@ -192,8 +192,18 @@ exports) but any attempt to write it fails the `WITH CHECK`. Postgres reports th
 as a policy violation, which the application surfaces as "outside your assigned
 sections", not as "not found" — because the row is legitimately visible.
 
+`auth.has_permission()` is built in migration 0012. It is applied to the write
+policies where a mistake would be unrecoverable — `project_membership`,
+`contract`, device enrolment — and deliberately **not** to every table: an
+`EXISTS`-heavy predicate evaluated per row of a 10,000-row register costs more
+than it buys, and permission checking is step 5 of the resolution order, which
+`03-permission-matrix.md` §9 places in the application. Steps 2, 7 and 8 remain
+the database's job.
+
 `FORCE ROW LEVEL SECURITY` is set on every table so policies apply even if
-ownership is ever misconfigured.
+ownership is ever misconfigured — with two documented exemptions, `access_grant`
+and `audit_log_entry`, which are maintained by `SECURITY DEFINER` triggers
+running as the owner (see §6).
 
 ### Tables carrying a package fence
 
@@ -344,10 +354,13 @@ Stated plainly so the boundary is auditable:
   permission-level rule underneath).
 - Rate limiting, CSRF, signed-URL TTL — edge and application concerns.
 - Notification routing.
-- Authentication strength per action (§7 of `02-state-machines.md`) — enforced in
-  the application, but *recorded* in the database: every signature carries
-  `authentication_event_id`, so a signature made at insufficient strength is
-  detectable after the fact by query, and the acceptance suite asserts none exist.
+- Authentication strength per action (§7 of `02-state-machines.md`) is now
+  **decided** in the database as well: `auth.decide()` (migration 0012) compares
+  the session's `app.auth_strength` GUC against `permission.min_auth_strength`
+  and applies the device-bound capability intersection. The application calls
+  that function rather than reimplementing it, so the two cannot diverge. It is
+  also *recorded*: every signature carries `authentication_event_id`, so a
+  signature made at insufficient strength is detectable after the fact by query.
 - The *proposed* severity of a system-raised NCR (assistive; a human confirms).
 
 Everything in `02-state-machines.md` §1–§6 and every row-visibility and
