@@ -13,8 +13,8 @@ spine of the data model, not a bolt-on map view.
 
 **Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
 (project structure, spatial framework, vertical datum) are migrated, seeded and
-tested. 58 tests green, all at SQL level against `lotline_app` with RLS in force —
-no UI exists yet, by design.
+tested. 116 tests green — RLS and immutability at SQL level against `lotline_app`, plus
+the permission resolver and the authentication seam. No UI exists yet, by design.
 
 Design reviews 1 and 2 are complete; see `docs/decisions.md` for ADR-0001 …
 ADR-0023.
@@ -24,7 +24,7 @@ ADR-0023.
 npm install
 npm run db:reset         # apply every migration to a fresh database
 npm run db:seed          # one realistic JV project
-npm test                 # 58 assertions: RLS, immutability, audit, auth, spatial
+npm test                 # 116 assertions across 8 suites
 ```
 
 ### What the suite proves
@@ -36,6 +36,9 @@ npm test                 # 58 assertions: RLS, immutability, audit, auth, spatia
 | `tests/audit.test.ts` | Every mutation is logged with before/after values and the full request context, including writes made by trigger cascade. |
 | `tests/auth-device.test.ts` | A device cannot be trusted without a step-up MFA enrolment, and a PIN cannot bind an identity that was not independently verified. |
 | `tests/spatial.test.ts` | MGA zone/SRID consistency, chainage equations, 2D-only canonical geometry, and that no RL column can exist without a `vertical_datum_id`. |
+| `tests/permissions.test.ts` | The resolution order step by step, each refusal checked for the *right* reason. A rule that denies for the wrong reason will allow for the wrong reason later. |
+| `tests/auth-logic.test.ts` | Home-realm discovery and authentication-strength derivation, as pure functions — no browser, no IdP, no server. |
+| `tests/session-bridge.test.ts` | That strength is recomputed from the stored event rather than trusted from the client, and that a revoked device drops an already-open session. |
 
 | Document | Contents |
 |---|---|
@@ -54,6 +57,7 @@ npm test                 # 58 assertions: RLS, immutability, audit, auth, spatia
 | `db/migrations/` | **The authoritative schema.** Hand-written SQL, applied once in order, hash-pinned. RLS policies, guard functions, generated columns and revoked privileges are the substance of the design and none of them round-trip through an ORM's schema differ. |
 | `src/db/schema/` | Drizzle schema mirroring the migrations, for application-layer typing. It does not generate them. |
 | `src/db/session.ts` | The only door to the database: a transaction bound to a caller identity via `SET LOCAL`. Obtaining a connection without one is not possible. |
+| `src/auth/` | Permission resolution (a thin client over `auth.decide()` — the rules live in SQL, once), home-realm discovery, authentication-strength derivation, and the request→session bridge. |
 | `seed/` | One realistic joint-venture project. Real rows through the real schema. |
 
 Start with `docs/05-assumptions-and-open-questions.md` — the open questions there
