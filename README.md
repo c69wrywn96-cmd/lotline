@@ -13,9 +13,9 @@ spine of the data model, not a bolt-on map view.
 
 **Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
 (project structure, spatial framework, vertical datum) are migrated, seeded and
-tested. 157 tests green — RLS and immutability at SQL level against `lotline_app`, the
-permission resolver, the authentication seam, account linking, and the device
-enrolment screens.
+tested. 173 tests green — RLS and immutability at SQL level against `lotline_app`, the
+permission resolver, the authentication seam, credential sign-in, account
+linking, and the device enrolment screens.
 
 Design reviews 1 and 2 are complete; see `docs/decisions.md` for ADR-0001 …
 ADR-0023.
@@ -25,7 +25,7 @@ ADR-0023.
 npm install
 npm run db:reset         # apply every migration to a fresh database
 npm run db:seed          # one realistic JV project
-npm test                 # 157 assertions across 11 suites
+npm test                 # 173 assertions across 12 suites
 npm run build            # Next.js app (device enrolment screens)
 ```
 
@@ -44,6 +44,7 @@ npm run build            # Next.js app (device enrolment screens)
 | `tests/identity-link.test.ts` | That the migration between authentication patterns is three-party and explicit, and that registering an identity provider never re-routes anyone on its own. |
 | `tests/devices-ui.test.ts` | That an administrator cannot set a user's PIN, that device trust and user enrolment stay visibly separate states, and that revocation is immediate. |
 | `tests/standards-import.test.ts` | That the specification importer takes identifiers and structure and **rejects** a register carrying clause text (ADR-0006). |
+| `tests/credentials.test.ts` | That the sign-in form is not an enumeration oracle, that a TOTP code cannot be replayed inside its own window, that recovery codes are single-use and buy only a session, and that a retired credential cannot authenticate. |
 
 | Document | Contents |
 |---|---|
