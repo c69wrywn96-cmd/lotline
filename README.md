@@ -11,12 +11,31 @@ spine of the data model, not a bolt-on map view.
 
 ## Current status
 
-**Design review round 1 complete — no application code written yet.**
+**Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
+(project structure, spatial framework, vertical datum) are migrated, seeded and
+tested. 58 tests green, all at SQL level against `lotline_app` with RLS in force —
+no UI exists yet, by design.
 
-Per §14 of the build brief, the schema, state machines and permission model are
-reviewed before implementation begins. Round 1 amended ADR-0004 (vertical datum)
-and ADR-0010 (hold vs witness blocking, record-based clearance) and added
-ADR-0018 … ADR-0022.
+Design reviews 1 and 2 are complete; see `docs/decisions.md` for ADR-0001 …
+ADR-0023.
+
+```bash
+./scripts/dev-db.sh      # Postgres 16 + PostGIS 3.4
+npm install
+npm run db:reset         # apply every migration to a fresh database
+npm run db:seed          # one realistic JV project
+npm test                 # 58 assertions: RLS, immutability, audit, auth, spatial
+```
+
+### What the suite proves
+
+| Suite | Proves |
+|---|---|
+| `tests/rls.test.ts` | §12.10 subcontractor isolation and the JV read/write split, **by query**. No application authorisation logic participates. |
+| `tests/immutability.test.ts` | `DELETE` is refused by the database on every table; a locked row is frozen except its enumerated unfrozen columns. |
+| `tests/audit.test.ts` | Every mutation is logged with before/after values and the full request context, including writes made by trigger cascade. |
+| `tests/auth-device.test.ts` | A device cannot be trusted without a step-up MFA enrolment, and a PIN cannot bind an identity that was not independently verified. |
+| `tests/spatial.test.ts` | MGA zone/SRID consistency, chainage equations, 2D-only canonical geometry, and that no RL column can exist without a `vertical_datum_id`. |
 
 | Document | Contents |
 |---|---|
@@ -26,7 +45,16 @@ ADR-0018 … ADR-0022.
 | [`docs/03-permission-matrix.md`](docs/03-permission-matrix.md) | 16 roles × ~90 permissions, with scope and constraint footnotes |
 | [`docs/04-rls-and-enforcement.md`](docs/04-rls-and-enforcement.md) | Row-level security, immutability and audit enforcement — the mechanism behind acceptance criterion §12.10 |
 | [`docs/decisions.md`](docs/decisions.md) | ADR-0001 … ADR-0017 |
-| [`docs/05-assumptions-and-open-questions.md`](docs/05-assumptions-and-open-questions.md) | 20 assumptions and 17 open questions, ordered by cost of a late answer |
+| [`docs/05-assumptions-and-open-questions.md`](docs/05-assumptions-and-open-questions.md) | Assumptions and open questions, ordered by cost of a late answer |
+
+## Layout
+
+| Path | |
+|---|---|
+| `db/migrations/` | **The authoritative schema.** Hand-written SQL, applied once in order, hash-pinned. RLS policies, guard functions, generated columns and revoked privileges are the substance of the design and none of them round-trip through an ORM's schema differ. |
+| `src/db/schema/` | Drizzle schema mirroring the migrations, for application-layer typing. It does not generate them. |
+| `src/db/session.ts` | The only door to the database: a transaction bound to a caller identity via `SET LOCAL`. Obtaining a connection without one is not possible. |
+| `seed/` | One realistic joint-venture project. Real rows through the real schema. |
 
 Start with `docs/05-assumptions-and-open-questions.md` — the open questions there
 are what block Phase 1.

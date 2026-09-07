@@ -477,8 +477,61 @@ The conformance pack's appendix carries every concession, retrospective release 
 signature withdrawal against the lot — a lot that got to conformed the hard way
 says so on the paper.
 
-*Open for confirmation:* whether the automatic process NCR should be unconditional
-or contract-configurable. It is unconditional as designed.
+**Amendment (design review 2) — the NCR trigger branches on the decision time, not
+on a contract setting.** A configurable switch was rejected: it gets turned off in
+month two when the register looks embarrassing, and the record is then gone.
+Worse, under TfNSW Q6 and most client QA specs a departure from the approved
+quality system itself requires an NCR, so a tenant who switched it off would be in
+breach of their own QMS — and we would have shipped the switch that put them
+there.
+
+The volume concern was real, but the flag was the wrong fix because it conflated
+two genuinely different events:
+
+- **(a) Administrative lag.** The release *decision* was made before work
+  proceeded; only the signature was late. The Superintendent released verbally at
+  the excavation and signed back in the office. The hold point did its job. This
+  is not a non-conformance.
+- **(b) Unreleased progression.** The release decision itself came after the work.
+  Nobody cleared it at the time. This is a non-conformance by definition.
+
+`retrospective_release` therefore records `release_decision_at` alongside
+`work_proceeded_at` and the signature time, and the classification is a
+**generated column**, not a user assertion:
+
+```sql
+lag_class GENERATED ALWAYS AS (
+  CASE WHEN release_decision_at <= work_proceeded_at
+            AND decision_evidence_kind <> 'none'
+            AND (decision_witness_user_id IS NOT NULL
+              OR decision_witness_name    IS NOT NULL
+              OR decision_evidence_id     IS NOT NULL)
+       THEN 'administrative_lag'
+       ELSE 'unreleased_progression'
+  END
+) STORED
+```
+
+Claiming an administrative lag with nothing behind it does not fail — it
+**degrades to `unreleased_progression`** and raises the NCR. The branch cannot be
+self-asserted, and because the column is generated there is nothing to override.
+
+An `administrative_lag` is logged, counted and surfaced in the ageing view. It
+raises no NCR. An `unreleased_progression` raises one unconditionally.
+
+Severity is then classified by `verification_basis` rather than suppressed:
+
+| `verification_basis` | Severity | Closeout |
+|---|---|---|
+| `contemporaneous_evidence` | minor / process | Auto-populated, closeable with the release record as its own evidence. Low friction by design. |
+| `physical_reinspection` | minor | Standard closeout. |
+| `destructive_verification` | **major** | Someone cut into finished work. |
+| `none` | **major** | EM disposition mandatory; cannot close as *Use As Is* without a client concession. If nobody can say how they satisfied themselves the work conformed, that is the whole problem, and recording it should be expensive. |
+
+**The volume is the signal.** A project generating forty of these a month has a
+systemic failure in hold point discipline, and the register is exactly where that
+should become visible to the Quality Manager and the client. Suppressing the count
+suppresses the only thing that would fix it.
 
 ---
 
@@ -604,3 +657,54 @@ critical path without removing them from the process.
 §12.7 / §12.9 acceptance demonstration changes shape: the client's involvement is
 shown at the hold and witness points, and the lot conforms on the contractor's
 certification — which is what actually happens on a TfNSW package.
+
+---
+
+### ADR-0023 — Roles exist at two scope levels; org-scoped quality authority breaks the small-team deadlock
+**Status:** Accepted at design review 2 (resolves OQ-19)
+
+**Context.** As designed through review 1, every role was project-scoped and
+`org_membership` was bare employment with no role attached. Segregation rules that
+require a second eligible signatory — `signature_withdrawal` counter-signature
+being the immediate case — therefore had to resolve inside a single project. On a
+project with a two-person QA team, or where the only Quality Manager is the person
+whose signature is being withdrawn, that deadlocks: the correction cannot be made
+at all, which pushes people toward working around the record instead of through
+it.
+
+Contractors already solve this organisationally. A Tier 1 has a Group or Divisional
+Quality Manager sitting above the projects, and quality authority genuinely does
+escalate out of the project. The model just did not have a place to put them.
+
+**Decision.** `role.scope_level ∈ {organisation, project}`.
+
+- `org_membership` gains a nullable `role_id`. A null role is plain employment; a
+  non-null role is a standing appointment at organisation level.
+- An organisation-scoped membership materialises `access_grant` rows for **every
+  project where that organisation is an active `project_participant`** — so a
+  Group QM gains and loses project visibility automatically as the org's project
+  portfolio changes, with no per-project administration. The projection trigger
+  therefore fires on `project_participant` as well as on membership.
+- Org-scoped grants are `read/project` plus `write/project`, narrowed by the role's
+  permission bundle exactly as the Superintendent's Representative is — scope says
+  *where*, permissions say *what*.
+- Ships with one system template: **Group Quality Manager (GQM)**, contractor side,
+  organisation scope. Holds project-wide read across the portfolio, the audit
+  programme, the standards and acceptance-scheme libraries, audit log export, and
+  the counter-signature permissions `signature.withdraw.countersign` and
+  `checkpoint.correct.countersign`. It does **not** hold `lot.raise`,
+  `checkpoint.sign` or any hold release permission — those are project
+  nominations, and a group appointment is not a nomination.
+
+Counter-signature eligibility for a `signature_withdrawal` is then: a user who is
+**not the original signatory**, and who holds either `signature.withdraw` at
+project level or `signature.withdraw.countersign` at organisation level. A
+two-person team escalates to group QA rather than deadlocking.
+
+**Consequences.** `access_grant` gains rows that are not traceable to a
+`project_membership`, so the projection carries a `source` discriminator
+(`project_membership` / `org_membership`) and the RLS tests assert both paths.
+Org-scoped grants must be revoked promptly when a `project_participant` period
+closes — handled by the same trigger, and tested. The external-membership
+assertion from ADR-0020 is unaffected and is now enforced for both sources: no
+`side='external'` membership of either kind can produce project-wide read.

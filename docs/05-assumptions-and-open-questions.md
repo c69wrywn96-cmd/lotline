@@ -136,19 +136,21 @@ plus recent iOS, with a nominal 2 GB offline allowance per zone.
 
 ---
 
-### OQ-18 — Should a retrospective release always raise a process NCR, or should that be contract-configurable? *(new at review 1, affects Phase 2)*
-Currently unconditional (ADR-0019). Proceeding past an unreleased hold point is a
-non-conformance under any QMS and an auditor expects to find it in the register —
-but it does mean a register entry every time, and on a project where the record
-routinely lags the site that could be a lot of entries. The alternative is
-`contract.retrospective_release_raises_ncr`, defaulting true. **This is the one
-piece of new material in this pass I would most like a decision on.**
+### OQ-18 — Retrospective release NCR — ~~open~~ **resolved: branch on decision time, no flag**
+Not a contract switch. `retrospective_release` records `release_decision_at`
+alongside `work_proceeded_at`; a **generated** `lag_class` column separates an
+administrative lag (decision made in time, signature late — no NCR) from
+unreleased progression (decision made after the fact — NCR, unconditional).
+Claiming a lag without a witness or contemporaneous record degrades automatically
+to unreleased progression. Severity is classified by `verification_basis`, not
+suppressed. **ADR-0019, amended.**
 
-### OQ-19 — Who may sign a `signature_withdrawal`? *(new at review 1)*
-Currently QM unrestricted, EM within their own discipline, and nobody may withdraw
-their own signature. The segregation rule feels right but it means a QM correcting
-their own mis-signature needs a second QM or an EM — which on a small project team
-may not exist. Confirm, or allow self-withdrawal with a second signatory.
+### OQ-19 — Signature withdrawal counter-signature — ~~open~~ **resolved: org-scoped quality role**
+The model did not have one; it does now. `role.scope_level` admits
+`organisation`, `org_membership` carries a role, and a Group Quality Manager
+template holds `signature.withdraw.countersign` across every project their
+organisation participates in. A two-person QA team escalates instead of
+deadlocking. **ADR-0023.**
 
 ### OQ-20 — Local and assumed vertical datums: how common on your target projects? *(new at review 1)*
 `vertical_datum` supports local datums tied to a site benchmark (ADR-0018). If
