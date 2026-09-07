@@ -13,8 +13,9 @@ spine of the data model, not a bolt-on map view.
 
 **Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
 (project structure, spatial framework, vertical datum) are migrated, seeded and
-tested. 116 tests green — RLS and immutability at SQL level against `lotline_app`, plus
-the permission resolver and the authentication seam. No UI exists yet, by design.
+tested. 157 tests green — RLS and immutability at SQL level against `lotline_app`, the
+permission resolver, the authentication seam, account linking, and the device
+enrolment screens.
 
 Design reviews 1 and 2 are complete; see `docs/decisions.md` for ADR-0001 …
 ADR-0023.
@@ -24,7 +25,8 @@ ADR-0023.
 npm install
 npm run db:reset         # apply every migration to a fresh database
 npm run db:seed          # one realistic JV project
-npm test                 # 116 assertions across 8 suites
+npm test                 # 157 assertions across 11 suites
+npm run build            # Next.js app (device enrolment screens)
 ```
 
 ### What the suite proves
@@ -39,6 +41,9 @@ npm test                 # 116 assertions across 8 suites
 | `tests/permissions.test.ts` | The resolution order step by step, each refusal checked for the *right* reason. A rule that denies for the wrong reason will allow for the wrong reason later. |
 | `tests/auth-logic.test.ts` | Home-realm discovery and authentication-strength derivation, as pure functions — no browser, no IdP, no server. |
 | `tests/session-bridge.test.ts` | That strength is recomputed from the stored event rather than trusted from the client, and that a revoked device drops an already-open session. |
+| `tests/identity-link.test.ts` | That the migration between authentication patterns is three-party and explicit, and that registering an identity provider never re-routes anyone on its own. |
+| `tests/devices-ui.test.ts` | That an administrator cannot set a user's PIN, that device trust and user enrolment stay visibly separate states, and that revocation is immediate. |
+| `tests/standards-import.test.ts` | That the specification importer takes identifiers and structure and **rejects** a register carrying clause text (ADR-0006). |
 
 | Document | Contents |
 |---|---|
@@ -58,6 +63,8 @@ npm test                 # 116 assertions across 8 suites
 | `src/db/schema/` | Drizzle schema mirroring the migrations, for application-layer typing. It does not generate them. |
 | `src/db/session.ts` | The only door to the database: a transaction bound to a caller identity via `SET LOCAL`. Obtaining a connection without one is not possible. |
 | `src/auth/` | Permission resolution (a thin client over `auth.decide()` — the rules live in SQL, once), home-realm discovery, authentication-strength derivation, and the request→session bridge. |
+| `src/app/devices/` | Device enrolment and management. All logic sits in `data.ts` and is tested directly, because this is the feature where a UI can quietly undermine the security model. |
+| `seed/standards/` | Specification register importer and its format. No register is committed — see the README there. |
 | `seed/` | One realistic joint-venture project. Real rows through the real schema. |
 
 Start with `docs/05-assumptions-and-open-questions.md` — the open questions there

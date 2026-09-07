@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { Database, type SessionContext } from '../src/db/session.js';
+import { Database, type SessionContext } from '../src/db/session';
 
 export const OWNER_URL =
   process.env.DATABASE_URL_OWNER ?? 'postgres://postgres:postgres@localhost:5432/lotline';

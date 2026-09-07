@@ -7,8 +7,8 @@
  * absent or unreadable input yields the LEAST privilege, never the most.
  */
 import type pg from 'pg';
-import type { SessionContext } from '../db/session.js';
-import { deriveStrength, type AuthMethod, type AuthStrength } from './strength.js';
+import type { SessionContext } from '../db/session';
+import { deriveStrength, type AuthMethod, type AuthStrength } from './strength';
 
 export interface RequestIdentity {
   userId: string;

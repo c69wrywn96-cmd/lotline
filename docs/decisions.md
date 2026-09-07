@@ -708,3 +708,83 @@ Org-scoped grants must be revoked promptly when a `project_participant` period
 closes — handled by the same trigger, and tested. The external-membership
 assertion from ADR-0020 is unaffected and is now enforced for both sources: no
 `side='external'` membership of either kind can produce project-wide read.
+
+---
+
+### ADR-0024 — Account linking is the deliberate exit from an authentication pattern
+**Status:** Accepted at design review 3
+
+**Context.** `src/auth/home-realm.ts` never re-routes a user recorded as
+`local_credentials` because their employer's domain later appears on an identity
+provider. That rule is correct — silently switching a subcontractor would lock
+them out of their own account — but on its own it is a **one-way door**. A
+ten-person subcontractor gets acquired, or federates, and their people are stuck
+on PINs and TOTP indefinitely. The result is a permanent shadow estate of local
+accounts that nobody can retire, which is worse for security than the federation
+it was protecting against.
+
+**Decision.** An explicit, three-party, audited link (`identity_link_request`):
+
+1. **A contractor admin initiates.** Requires `admin.users.manage` on a project
+   the subject belongs to, plus step-up authentication — changing how someone
+   signs in is exactly as consequential as releasing a hold point. A one-time
+   token is generated; only its SHA-256 is stored.
+2. **The user verifies from the target provider.** Nobody else can perform this
+   step. Verification requires the token, an email matching the account being
+   linked (this is what makes it a *link* rather than an account transfer), the
+   provider still being active, and the issuer matching. A federated subject
+   already bound to a different user is refused outright — otherwise one
+   federated identity could absorb a second local account.
+3. **Completion retires, never deletes.** The old `auth_identity` is revoked, the
+   `auth_credential` gains `retired_at` with a reason, TOTP enrolment is revoked,
+   and `user_account.auth_pattern` flips. **Both identities remain attached to
+   the one user record**, so the audit trail still shows the account existed and
+   how it was migrated (ADR-0003).
+
+**Never automatic, never triggered by domain discovery.** There is no trigger
+anywhere in migration 0014, deliberately: nothing observes
+`org_identity_provider` and re-points users at it. A test asserts that
+registering a provider claiming a local user's domain leaves that user on local
+credentials, and a second test asserts the only triggers on that table are the
+domain-disjointness guard and the audit trigger.
+
+Direction is not fixed: `from_pattern` and `to_pattern` are both free, so
+de-federation works by the same path — a subcontractor leaving an acquiring
+parent needs the door to open the other way too.
+
+**Consequences.** One live request per user (a unique partial index), because two
+concurrent migrations would race to retire the same credential. The estate stays
+migratable, so `local_credentials` remains a reasonable place to *start* a small
+supplier rather than a place they are trapped.
+
+---
+
+### ADR-0025 — Hosting: AWS ap-southeast-2, DR to ap-southeast-4
+**Status:** Accepted at design review 3 (resolves OQ-10)
+
+**Context.** Data sovereignty is a procurement gate for government-funded
+infrastructure, and QA records for a state road authority cannot sit offshore.
+The buyers are government-adjacent and already assess against IRAP.
+
+**Decision.** AWS **ap-southeast-2** (Sydney) primary, **ap-southeast-4**
+(Melbourne) for disaster recovery. IRAP-assessed, and where the
+government-adjacent buyers already sit. No customer-tenancy deployment at launch;
+single-tenant-in-their-own-account is a later enterprise tier, not a Phase 1
+shape.
+
+Consequences that are architectural rather than operational, and therefore
+binding on the build:
+
+| Requirement | Implication |
+|---|---|
+| Immutable artefacts | **S3 Object Lock** in compliance mode for signed conformance packs, signatures and audit exports. This is the storage-layer counterpart to ADR-0003: the database refuses `DELETE`, and the object store refuses overwrite for the retention period. Retention is driven by `contract.retention_years`. |
+| Malware scanning on ingest | **GuardDuty Malware Protection for S3**, with ClamAV in the worker as the fallback where a bucket is outside GuardDuty's coverage. `document_revision.scan_status` already gates pack generation (guard K1): a file that is not `clean` aborts assembly, so an unscanned document can never reach a client. |
+| Conformance packs must not leave the country in transit | PDF workers run **in-region**. No cross-region rendering, no third-party rendering service, no CDN egress path that could terminate offshore. The BullMQ worker fleet, the Chromium renderer and the object store are all ap-southeast-2. |
+| DR | Cross-region replication ap-southeast-2 → ap-southeast-4 for the object store; PITR plus cross-region snapshot for the database. Both regions are Australian, so failover does not become a sovereignty event. |
+| Audit archive | Detached monthly partitions (ADR-0013) land in Object Lock storage in-region, satisfying the 10-year-plus retention horizon without a delete path. |
+
+**Consequences.** Region choice is now a build-time fact, not a deployment
+detail: the worker topology and the storage configuration are designed around it.
+A future customer-tenancy tier will need the storage and worker configuration
+parameterised, which is why they are configuration rather than constants from the
+outset.

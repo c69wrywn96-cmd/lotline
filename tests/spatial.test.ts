@@ -5,7 +5,7 @@
  * this industry is a defect, not a rounding error.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { asOwner, appDb } from './helpers.js';
+import { asOwner, appDb } from './helpers';
 
 afterAll(async () => { await appDb.end(); });
 

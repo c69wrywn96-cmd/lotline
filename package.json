@@ -12,7 +12,8 @@
     "db:seed": "tsx seed/seed.ts",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "db:standards": "tsx seed/standards/import.ts"
   },
   "dependencies": {
     "@auth/core": "^0.41.3",

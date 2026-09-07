@@ -5,7 +5,7 @@
  * testable; this file is the only part that needs a connection.
  */
 import pg from 'pg';
-import type { AuthPattern, RealmRoute } from './home-realm.js';
+import type { AuthPattern, RealmRoute } from './home-realm';
 
 /**
  * Reads active federated providers. Runs on a privileged connection, NOT a

@@ -77,10 +77,24 @@ never sufficient. Folded into `permission.min_auth_strength`.
 
 ## B2. Still open
 
-### OQ-4 — Which specification suite do we build the library skeleton for first?
-TfNSW (Q6 / R-series / B-series) is the largest market and the brief's examples
-lean that way. Confirm, or name a different first target. This sets the seed data
-for the Phase 1 realistic project.
+### OQ-4 — Specification suite — **answered, ingest blocked on network egress**
+**Answered:** TfNSW QA Specification suite. Q6 for the quality-system skeleton
+(full clause tree — it is the spec that structures every ITP), plus earthworks,
+unbound pavement, drainage and bridge concrete at **hold/witness-bearing clauses
+only**. Publicly published specifications, not a project contract copy: same
+document in most cases, but the public version carries no contract-specific
+annexures and no question about what we were licensed to ingest. Per ADR-0006,
+identifiers and titles only — no clause text.
+
+**Blocked:** this environment's egress proxy refuses
+`transport.nsw.gov.au` and `standards.transport.nsw.gov.au`, so the register
+cannot be pulled here. Numbering has demonstrably moved — a web search shows Q6
+now issued as `TS 01572.1`, not a bare `Q6` — which is exactly why seeding from
+memory was ruled out. The schema and a validating importer are built and tested;
+**no specification identifiers have been seeded.** Unblock by either allowlisting
+those two hosts for this environment, or dropping the register export at
+`seed/standards/tfnsw-register.json` (format documented in
+`seed/standards/README.md`), after which seeding is one command.
 
 ### OQ-5 — Do you hold licences permitting k-factor tables and acceptance criteria to ship with the product? *(affects ADR-0007)*
 I have assumed **no**, and designed for tenant-populated tables. If a licence
@@ -102,9 +116,12 @@ informational.
 A7 assumes the latter. Some packages (precast, specialist coatings) have the sub
 running its own ITP that the head contractor surveils.
 
-### OQ-10 — Hosting: AWS `ap-southeast-2`, Azure Australia East, or on a customer's own tenancy? *(blocks Phase 1 infrastructure)*
-Affects object storage, virus scanning, the PDF worker fleet and how IRAP
-alignment is argued. Government-funded infrastructure procurement will ask.
+### OQ-10 — Hosting — ~~open~~ **AWS ap-southeast-2, DR to ap-southeast-4**
+IRAP-assessed and where the government-adjacent buyers already sit. No
+customer-tenancy deployment at launch; single-tenant-in-their-account is a later
+enterprise tier. Binds S3 Object Lock for immutable artefacts, GuardDuty (ClamAV
+fallback) malware scanning on ingest, and in-region PDF workers — conformance
+packs must not leave the country in transit. **ADR-0025.**
 
 ### OQ-11 — Do any target clients mandate strictly sequential, unbroken lot numbering?
 A15 allocates numbers at raise, which can leave gaps if a lot is superseded. Some

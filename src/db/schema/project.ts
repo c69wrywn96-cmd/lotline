@@ -2,8 +2,8 @@ import {
   pgTable, uuid, text, boolean, integer, numeric, timestamp, date, primaryKey,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { organisation, userAccount } from './identity.js';
-import { geometry, ltree, daterange, numrange } from './_types.js';
+import { organisation, userAccount } from './identity';
+import { geometry, ltree, daterange, numrange } from './_types';
 
 export const unit = pgTable('unit', {
   id: uuid('id').primaryKey().default(sql`uuid_generate_v7()`),

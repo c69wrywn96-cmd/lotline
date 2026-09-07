@@ -2,7 +2,7 @@
  * ADR-0003: there is no delete in this product, and a signed record is frozen.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { as, asOwner, appDb, userId, USERS } from './helpers.js';
+import { as, asOwner, appDb, userId, USERS } from './helpers';
 
 afterAll(async () => { await appDb.end(); });
 

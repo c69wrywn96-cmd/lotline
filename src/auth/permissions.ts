@@ -10,7 +10,7 @@
  * What lives here: a typed permission vocabulary, a per-request cache, and error
  * mapping good enough that the UI can explain a refusal.
  */
-import type { SessionClient } from '../db/session.js';
+import type { SessionClient } from '../db/session';
 
 /**
  * The permission vocabulary. Kept in step with the `permission` table by
@@ -35,7 +35,8 @@ export const PERMISSIONS = [
   'admin.permission_grant.issue', 'admin.delegation.create',
   'admin.standards.manage', 'admin.acceptance_scheme.manage',
   'admin.integration.configure', 'admin.idp.configure', 'admin.device.enrol',
-  'admin.device.revoke', 'admin.device.user_enrol', 'api.key.manage',
+  'admin.device.revoke', 'admin.device.user_enrol', 'admin.identity_link.initiate',
+  'api.key.manage',
   'qa_audit.schedule', 'qa_audit.conduct', 'export.data', 'export.audit_log',
   'pc.sign',
 ] as const;

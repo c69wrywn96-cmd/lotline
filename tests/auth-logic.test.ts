@@ -6,10 +6,10 @@
  * not evidence.
  */
 import { describe, it, expect } from 'vitest';
-import { emailDomain, resolveRealm, type RealmRoute } from '../src/auth/home-realm.js';
+import { emailDomain, resolveRealm, type RealmRoute } from '../src/auth/home-realm';
 import {
   deriveStrength, satisfies, STEP_UP_TTL_SECONDS, DEVICE_UNLOCK_TTL_SECONDS,
-} from '../src/auth/strength.js';
+} from '../src/auth/strength';
 
 const ardent: RealmRoute = {
   domain: 'ardentsuper.com.au',

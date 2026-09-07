@@ -4,7 +4,7 @@
  * USER IDENTITY, not to the device — it is binding a signature.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { asOwner, appDb, userId, USERS } from './helpers.js';
+import { asOwner, appDb, userId, USERS } from './helpers';
 
 afterAll(async () => { await appDb.end(); });
 

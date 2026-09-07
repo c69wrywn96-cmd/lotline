@@ -6,9 +6,9 @@
  * wrong reason is a rule that will allow for the wrong reason later.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { asOwner, appDb, userId, USERS } from './helpers.js';
-import { PermissionResolver, PERMISSIONS, NON_DELEGABLE, PermissionError, type Permission, type Subject } from '../src/auth/permissions.js';
-import type { SessionContext } from '../src/db/session.js';
+import { asOwner, appDb, userId, USERS } from './helpers';
+import { PermissionResolver, PERMISSIONS, NON_DELEGABLE, PermissionError, type Permission, type Subject } from '../src/auth/permissions';
+import type { SessionContext } from '../src/db/session';
 
 afterAll(async () => { await appDb.end(); });
 

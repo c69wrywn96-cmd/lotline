@@ -2,7 +2,7 @@ import {
   pgTable, uuid, text, boolean, timestamp, jsonb, integer, bigint, inet, customType,
 } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { citext, daterange } from './_types.js';
+import { citext, daterange } from './_types';
 
 const bytea = customType<{ data: Buffer }>({ dataType: () => 'bytea' });
 const textArray = customType<{ data: string[] }>({ dataType: () => 'text[]' });

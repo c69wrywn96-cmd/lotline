@@ -1,7 +1,7 @@
 import { pgTable, uuid, text, boolean, jsonb, timestamp, primaryKey, customType } from 'drizzle-orm/pg-core';
 import { sql } from 'drizzle-orm';
-import { organisation, userAccount } from './identity.js';
-import { ltree, tstzrange, daterange } from './_types.js';
+import { organisation, userAccount } from './identity';
+import { ltree, tstzrange, daterange } from './_types';
 
 const textArray = customType<{ data: string[] }>({ dataType: () => 'text[]' });
 

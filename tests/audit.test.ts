@@ -3,7 +3,7 @@
  * be forgotten or bypassed by any application code path.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { asOwner, appDb, userId, USERS } from './helpers.js';
+import { asOwner, appDb, userId, USERS } from './helpers';
 import { randomUUID } from 'node:crypto';
 
 afterAll(async () => { await appDb.end(); });

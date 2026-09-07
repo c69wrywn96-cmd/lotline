@@ -6,8 +6,8 @@
  * with RLS in force. No application authorisation logic participates.
  */
 import { describe, it, expect, afterAll } from 'vitest';
-import { as, asOwner, countAs, appDb, userId, USERS, APP_URL, READONLY_URL } from './helpers.js';
-import { Database, isWriteScopeViolation } from '../src/db/session.js';
+import { as, asOwner, countAs, appDb, userId, USERS, APP_URL, READONLY_URL } from './helpers';
+import { Database, isWriteScopeViolation } from '../src/db/session';
 
 afterAll(async () => {
   await appDb.end();
@@ -139,14 +139,50 @@ describe('§12.10 — subcontractor isolation, proved by query', () => {
   });
 
   it('a subcontractor cannot see another organisation via user_account', async () => {
-    const names = await as<{ full_name: string }>(
+    const names = (await as<{ full_name: string }>(
       USERS.subEarth,
       'SELECT full_name FROM user_account ORDER BY full_name',
+    )).map((n) => n.full_name);
+
+    // Asserted in BOTH directions. Until migration 0017 this test passed
+    // trivially, because user_account visibility had collapsed to self-only:
+    // the list contained one name, so it "did not contain" the other
+    // subcontractor for entirely the wrong reason. A register must be able to
+    // render a signatory's name, so the positive half is the real guard.
+    expect(names, 'they must see themselves').toContain('Tomas Vellacott');
+    expect(names, 'and the contractor staff they share a project with')
+      .toContain('Priya Nandakumar');
+    expect(names, 'but never another subcontractor').not.toContain('Hana Rowe');
+  });
+
+  it('a user shares no visibility with someone on a project they are not on', async () => {
+    // auth.shares_project_with must be a genuine predicate, not a constant.
+    const shares = await as<{ ok: boolean }>(
+      USERS.subEarth,
+      `SELECT auth.shares_project_with(
+                (SELECT id FROM user_account WHERE email = $1)) AS ok`,
+      [USERS.qm],
     );
-    // They share the project with contractor staff, so those are visible by
-    // design (a register must render a signatory's name), but the OTHER
-    // subcontractor must not be.
-    expect(names.map((n) => n.full_name)).not.toContain('Hana Rowe');
+    expect(shares[0]?.ok).toBe(true);
+
+    const orphan = await asOwner(async (c) => {
+      const org = (await c.query(`SELECT id FROM organisation LIMIT 1`)).rows[0].id;
+      return (await c.query(
+        `INSERT INTO user_account (email, full_name, status, primary_org_id, auth_pattern)
+         VALUES ('unrelated@example.invalid','Unrelated Person','active',$1,'local_credentials')
+         ON CONFLICT DO NOTHING
+         RETURNING id`, [org])).rows[0]?.id
+        ?? (await c.query(`SELECT id FROM user_account WHERE email='unrelated@example.invalid'`)).rows[0].id;
+    });
+
+    const none = await as<{ ok: boolean }>(
+      USERS.subEarth, `SELECT auth.shares_project_with($1::uuid) AS ok`, [orphan]);
+    expect(none[0]?.ok).toBe(false);
+
+    const visible = await as<{ n: string }>(
+      USERS.subEarth,
+      `SELECT count(*)::text n FROM user_account WHERE email = 'unrelated@example.invalid'`);
+    expect(Number(visible[0]!.n)).toBe(0);
   });
 });
 

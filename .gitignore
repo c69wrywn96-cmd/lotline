@@ -6,3 +6,5 @@ dist/
 coverage/
 *.log
 .devenv
+.next/
+next-env.d.ts
