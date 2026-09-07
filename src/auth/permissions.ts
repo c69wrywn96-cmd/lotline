@@ -36,7 +36,7 @@ export const PERMISSIONS = [
   'admin.standards.manage', 'admin.acceptance_scheme.manage',
   'admin.integration.configure', 'admin.idp.configure', 'admin.device.enrol',
   'admin.device.revoke', 'admin.device.user_enrol', 'admin.identity_link.initiate',
-  'api.key.manage',
+  'admin.role_grant.countersign', 'api.key.manage',
   'qa_audit.schedule', 'qa_audit.conduct', 'export.data', 'export.audit_log',
   'pc.sign',
 ] as const;

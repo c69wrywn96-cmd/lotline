@@ -17,9 +17,9 @@ import { TOTP, Secret } from 'otpauth';
 import { openSecret } from './secrets';
 import { recordAuthenticationEvent } from './session-bridge';
 
-/** Attempts before the credential locks. */
+/** Attempts from ONE SOURCE before that source is locked out of this account. */
 export const MAX_FAILED_ATTEMPTS = 5;
-/** How long a locked credential stays locked. */
+/** How long a source stays locked out. */
 export const LOCKOUT_MINUTES = 15;
 /** Steps either side of the current one that a TOTP code is accepted at. */
 export const TOTP_WINDOW = 1;
@@ -86,6 +86,12 @@ export async function authenticateWithPassword(
     secondFactor?: string | undefined;
     ip?: string | undefined;
     userAgent?: string | undefined;
+    /**
+     * Coarse origin key for lockout. Defaults to the source address. Lockout is
+     * keyed on (account, source) so that knowing someone's email address is not
+     * enough to deny them service on the morning of a pour (0024).
+     */
+    sourceKey?: string | undefined;
     now?: Date;
   },
 ): Promise<CredentialResult> {
@@ -114,19 +120,31 @@ export async function authenticateWithPassword(
     return { ok: false, reason: 'invalid_credentials' };
   }
 
-  if (cred.locked_until && cred.locked_until > now) {
+  const sourceKey = input.sourceKey ?? input.ip ?? 'unknown';
+
+  // The lock is per SOURCE. An attacker hammering from one origin cannot lock
+  // the legitimate origin out, because the counters are separate.
+  const posture = await client.query<{ source_locked_until: Date | null; account_delay_seconds: string }>(
+    `SELECT * FROM auth.auth_failure_posture($1,$2)`, [cred.user_id, sourceKey]);
+  const locked = posture.rows[0]?.source_locked_until ?? null;
+  if (locked && locked > now) {
     await recordFailure(client, cred.user_id, 'locked_out', input);
     return { ok: false, reason: 'locked_out' };
   }
+  // The ACCOUNT only ever accrues delay. A delay degrades; a lock denies, and
+  // denying is what the attacker wanted.
+  const delaySeconds = Number(posture.rows[0]?.account_delay_seconds ?? 0);
 
   if (cred.status !== 'active') {
     await argon2Verify(await DUMMY_HASH, input.password).catch(() => false);
     return { ok: false, reason: 'account_not_active' };
   }
 
+  if (delaySeconds > 0) await sleep(delaySeconds * 1000);
+
   const passwordOk = await argon2Verify(cred.password_hash, input.password).catch(() => false);
   if (!passwordOk) {
-    await registerFailedAttempt(client, cred, now);
+    await registerFailedAttempt(client, cred.user_id, sourceKey);
     await recordFailure(client, cred.user_id, 'bad_password', input);
     return { ok: false, reason: 'invalid_credentials' };
   }
@@ -143,16 +161,17 @@ export async function authenticateWithPassword(
 
   const second = await verifySecondFactor(client, totp, input.secondFactor, now);
   if (second.kind === 'invalid') {
-    await registerFailedAttempt(client, cred, now);
+    await registerFailedAttempt(client, cred.user_id, sourceKey);
     await recordFailure(client, cred.user_id, 'bad_totp', input);
     return { ok: false, reason: 'invalid_mfa' };
   }
   if (second.kind === 'replayed') {
-    await registerFailedAttempt(client, cred, now);
+    await registerFailedAttempt(client, cred.user_id, sourceKey);
     await recordFailure(client, cred.user_id, 'totp_replayed', input);
     return { ok: false, reason: 'mfa_replayed' };
   }
 
+  await client.query(`SELECT auth.clear_auth_failures($1,$2)`, [cred.user_id, sourceKey]);
   await client.query(
     `UPDATE auth_credential SET failed_attempts = 0, locked_until = NULL, updated_at = now()
       WHERE user_id = $1`,
@@ -242,20 +261,16 @@ async function verifySecondFactor(
   return { kind: 'invalid' };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function registerFailedAttempt(
-  client: pg.Client | pg.PoolClient, cred: CredentialRow, now: Date,
+  client: pg.Client | pg.PoolClient, userId: string, sourceKey: string,
 ): Promise<void> {
-  const attempts = cred.failed_attempts + 1;
-  const lock = attempts >= MAX_FAILED_ATTEMPTS
-    ? new Date(now.getTime() + LOCKOUT_MINUTES * 60_000)
-    : null;
   await client.query(
-    `UPDATE auth_credential
-        SET failed_attempts = $2,
-            locked_until = COALESCE($3, locked_until),
-            updated_at = now()
-      WHERE user_id = $1`,
-    [cred.user_id, attempts, lock],
+    `SELECT auth.register_auth_failure($1,$2,$3,make_interval(mins => $4))`,
+    [userId, sourceKey, MAX_FAILED_ATTEMPTS, LOCKOUT_MINUTES],
   );
 }
 

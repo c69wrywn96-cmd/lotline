@@ -310,6 +310,21 @@ async function main() {
      VALUES ($1,$2,$3,'Group Quality Manager')`,
     [req(orgs, 'jvA'), req(users, 'gqm'), await roleId('GQM')],
   );
+
+  // Two organisation administrators, because one is a single resignation away
+  // from the deadlock the role exists to prevent — and the second is also who
+  // counter-signs the first (migration 0025).
+  await mkUser('orgAdmin1', 'l.mwangi@northboundcivil.com.au', 'Lydia Mwangi',
+               req(orgs, 'jvA'), 'home_tenant');
+  await mkUser('orgAdmin2', 'f.szabo@northboundcivil.com.au', 'Ferenc Szabo',
+               req(orgs, 'jvA'), 'home_tenant');
+  for (const key of ['orgAdmin1', 'orgAdmin2'] as const) {
+    await c.query(
+      `INSERT INTO org_membership (organisation_id, user_id, role_id, job_title)
+       VALUES ($1,$2,$3,'Organisation Administrator')`,
+      [req(orgs, 'jvA'), req(users, key), await roleId('ORGADMIN')],
+    );
+  }
   for (const [key, org, title] of [
     ['qm', req(orgs, 'jvA'), 'Quality Manager'],
     ['em', req(orgs, 'jvA'), 'Engineering Manager'],

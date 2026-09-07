@@ -56,12 +56,16 @@ async function reset(): Promise<void> {
       `UPDATE auth_credential SET failed_attempts = 0, locked_until = NULL WHERE user_id=$1`,
       [uid]);
     await c.query(`UPDATE auth_totp SET last_used_counter = NULL WHERE user_id=$1`, [uid]);
+    await c.query(`DELETE FROM auth_failure_counter WHERE user_id=$1`, [uid]);
   });
 }
 
-const attempt = (email: string, password: string, secondFactor?: string, now?: Date) =>
+const attempt = (
+  email: string, password: string, secondFactor?: string, now?: Date,
+  sourceKey = 'site-office',
+) =>
   asOwner((c) => authenticateWithPassword(c, {
-    email, password, ip: '198.51.100.9',
+    email, password, ip: '198.51.100.9', sourceKey,
     ...(secondFactor === undefined ? {} : { secondFactor }),
     ...(now === undefined ? {} : { now }),
   }));
@@ -139,21 +143,71 @@ describe('TOTP replay', () => {
 });
 
 describe('lockout', () => {
-  it('locks after the configured number of failures and refuses even a correct password', async () => {
+  it('locks the OFFENDING SOURCE after the configured number of failures', async () => {
     await reset();
     for (let i = 0; i < MAX_FAILED_ATTEMPTS; i += 1) {
-      const r = await attempt(USERS.subEarth, 'wrong', '000000');
+      const r = await attempt(USERS.subEarth, 'wrong', '000000', undefined, 'attacker');
       expect(r.ok).toBe(false);
     }
 
     const now = new Date();
-    const locked = await attempt(USERS.subEarth, PASSWORD, codeAt(now), now);
-    expect(locked).toEqual({ ok: false, reason: 'locked_out' });
+    const fromAttacker = await attempt(USERS.subEarth, PASSWORD, codeAt(now), now, 'attacker');
+    expect(fromAttacker).toEqual({ ok: false, reason: 'locked_out' });
+    await reset();
+  });
 
-    // ...and releases once the window passes, without an administrator.
-    const after = new Date(now.getTime() + (LOCKOUT_MINUTES + 1) * 60_000);
-    const released = await attempt(USERS.subEarth, PASSWORD, codeAt(after), after);
+  it('THE DoS: an attacker who knows the address cannot lock out the real user', async () => {
+    // Keyed on the account alone, anyone who knows a foreman's email could lock
+    // them out on the morning of a pour, repeatedly, for free. Keyed on
+    // (account, source), the attacker only locks themselves out.
+    await reset();
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS * 3; i += 1) {
+      await attempt(USERS.subEarth, 'wrong', '000000', undefined, 'attacker');
+    }
+
+    const now = new Date();
+    const attacker = await attempt(USERS.subEarth, PASSWORD, codeAt(now), now, 'attacker');
+    expect(attacker, 'the attacker is locked out').toEqual({ ok: false, reason: 'locked_out' });
+
+    const foreman = await attempt(USERS.subEarth, PASSWORD, codeAt(now), now, 'site-office');
+    expect(foreman.ok, 'the real user still gets in').toBe(true);
+    await reset();
+  });
+
+  it('a source lock releases on its own, without an administrator', async () => {
+    await reset();
+    for (let i = 0; i < MAX_FAILED_ATTEMPTS; i += 1) {
+      await attempt(USERS.subEarth, 'wrong', '000000', undefined, 'site-office');
+    }
+    const now = new Date();
+    expect((await attempt(USERS.subEarth, PASSWORD, codeAt(now), now)).ok).toBe(false);
+
+    await asOwner(async (c) => {
+      // Advance the clock by expiring the lock, rather than sleeping 15 minutes.
+      await c.query(
+        `UPDATE auth_failure_counter SET locked_until = now() - interval '1 second'
+          WHERE user_id = (SELECT id FROM user_account WHERE email=$1)`, [USERS.subEarth]);
+    });
+
+    const later = new Date(now.getTime() + (LOCKOUT_MINUTES + 1) * 60_000);
+    const released = await attempt(USERS.subEarth, PASSWORD, codeAt(later), later);
     expect(released.ok).toBe(true);
+    await reset();
+  });
+
+  it('a spray across many sources buys delay for the account, not denial', async () => {
+    await reset();
+    const uid = await userId(USERS.subEarth);
+    for (let i = 0; i < 6; i += 1) {
+      await attempt(USERS.subEarth, 'wrong', '000000', undefined, `bot-${i}`);
+    }
+
+    const posture = await asOwner(async (c) =>
+      (await c.query(`SELECT * FROM auth.auth_failure_posture($1,'site-office')`, [uid])).rows[0]);
+    // Distinct sources accrue an account-wide DELAY...
+    expect(Number(posture.account_delay_seconds)).toBeGreaterThan(0);
+    // ...and never a lock on an origin that has not itself failed.
+    expect(posture.source_locked_until).toBeNull();
     await reset();
   });
 

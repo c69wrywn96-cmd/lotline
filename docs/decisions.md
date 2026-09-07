@@ -788,3 +788,162 @@ detail: the worker topology and the storage configuration are designed around it
 A future customer-tenancy tier will need the storage and worker configuration
 parameterised, which is why they are configuration rather than constants from the
 outset.
+
+---
+
+### ADR-0026 — Silent RLS pruning: naming the class and failing the build on it
+**Status:** Accepted at design review 4
+
+**Context.** Six defects in Phase 1 shared one shape. A policy predicate — or a
+`SECURITY INVOKER` helper used for a cross-user lookup — reads another
+RLS-enabled table. Postgres applies *that* table's policy inside the predicate,
+so a question about somebody else can only ever answer with the caller's own
+rows.
+
+```sql
+-- user_account's policy, before 0017:
+EXISTS (SELECT 1 FROM access_grant mine
+          JOIN access_grant theirs ON theirs.project_id = mine.project_id
+                                  AND theirs.user_id = user_account.id
+         WHERE mine.user_id = auth.user_id())
+```
+
+`access_grant` carries `user_id = auth.user_id()`, so `theirs` could only resolve
+to the viewer's own rows and the whole predicate reduced to
+`user_account.id = auth.user_id()`. User visibility had collapsed to self-only:
+no register could render a signatory's name.
+
+**Why it is worse than a denial.** A denial is loud. This returns HTTP 200 with
+an empty array. The screen renders blank, the audit log records nothing unusual,
+and the user concludes there is nothing to see. Every one of the six was found
+only when a screen first needed to display another person's data — never by
+reading the policy, and never by a test, because the tests that covered those
+policies ran as the owner, who bypasses RLS.
+
+The seventh was found by the detector below, within minutes of writing it:
+`auth.eligible_withdrawal_countersignatories` — the OQ-19 deadlock valve — was
+`SECURITY INVOKER` reading `project_membership`. For an application-role caller
+it returned **no eligible counter-signatories**, reporting "nobody can
+counter-sign this" when somebody could. Its existing test passed because it ran
+as the owner.
+
+**Decision.** Two mechanisms, both landed before the Phase 2 schema arrives.
+
+*1. Make `SECURITY DEFINER` the shape cross-user lookups take.* Not a convention
+— the available shape. `auth.in_scope`, `auth.has_permission`,
+`auth.shares_project_with`, `auth.administers_user`, `auth.can_see_organisation`,
+`auth.can_see_org_membership` and the counter-signatory resolvers are all
+`SECURITY DEFINER` with a pinned `search_path`, and
+`audit.policy_helper_risks()` fails the build if any of them stops being so.
+`auth.in_scope` in particular no longer depends on `access_grant`'s policy at
+all: were that one policy ever tightened, every `in_scope` call in every policy
+would have started returning false and the entire database would have read as
+empty.
+
+*2. A declaration registry with a detector.* `audit.rls_policy_references` finds
+every policy that depends on another RLS-enabled table — via **`pg_depend`, not a
+regex over policy text**, because a regex over `\mproject\M` flagged
+`contract_update`, which does not reference the `project` table at all, and a
+detector with false positives is one people learn to ignore.
+`audit.rls_reference_risks()` returns anything not declared in
+`rls_reference_declaration` with a disposition and a reason, and the test suite
+fails on a non-empty result. Reasons are constrained to 60 characters minimum:
+two of the first declarations said "Same fence on the write path", which records
+nothing a reviewer could check.
+
+A declaration of `pruning_intended` means the nested filtering **is** the fence —
+you see the child only where you can see the parent — so a cross-user answer
+would be wrong rather than missing. Nine of the eleven existing references are
+that. The other two became definer paths.
+
+**Consequences.** New policies cost a declaration. That is the point: the
+question "can this predicate ever need to answer about someone else's row?" now
+has to be answered in writing, at the time, by the person who knows. Phase 2
+roughly triples the schema, and the cost of answering that question per table is
+minutes, against an archaeology exercise across a surface whose failure mode is a
+screen that renders empty and nobody notices.
+
+---
+
+### ADR-0027 — Lockout is keyed on (account, source), not on the account
+**Status:** Accepted at design review 4
+
+**Context.** Five failures then fifteen minutes is sensible for the honest 6am
+subcontractor. Keyed on the account alone it is also a **denial-of-service
+primitive**: anyone who knows a foreman's email address can lock them out on the
+morning of a pour, repeatedly, for free, from anywhere. The attacker needs no
+credential and no access — only the address, which appears on every transmittal.
+
+**Decision.** `auth_failure_counter` is keyed on `(user_id, source_key)`.
+
+- **Per source: a hard lock.** Five failures from one origin lock *that origin*
+  out of that account for fifteen minutes. An attacker cannot lock out the
+  legitimate origin, because the counters are separate.
+- **Per account: a progressive delay, never a lock.** Distinct sources failing
+  against one account within the hour is the signature of a spray; it buys 0 →
+  0.5 → 1 → 2 → 4 seconds, capped at 8. Sustained distributed attempts cost the
+  attacker time; the real user is never refused outright.
+
+The distinction is the whole decision: **a delay degrades, a lock denies, and
+denying is what the attacker wanted.** A source counter untouched for an hour
+resets, so someone who mistyped last week does not start today one attempt from
+a lockout.
+
+`auth_credential.locked_until` is retained so historical values are not lost, but
+it is explicitly no longer the gate — leaving a second, account-wide lock in
+place would reintroduce exactly the denial this removes.
+
+**Consequences.** `source_key` is deliberately coarse (source address, or a
+stable client id where available) so that an attacker rotating addresses still
+accrues account-level delay. It is not a security boundary on its own — a
+determined attacker controls their apparent origin — but it does not need to be:
+its job is to make the *cheap* attack, which is the one that gets used, no longer
+free.
+
+---
+
+### ADR-0028 — Organisation Administrator: the counter-signatory of last resort
+**Status:** Accepted at design review 4 (second application of the OQ-19 shape)
+
+**Context.** "Nobody can grant themselves a role" is correct, and it produces the
+same deadlock as the signature-withdrawal counter-signature: a tenant whose only
+administrator leaves, or a two-person QA team where the second person is the one
+who needs correcting, has no exit and no self-service route back in. The shape
+has now appeared twice, so it gets a structural answer rather than a second
+special case.
+
+**Decision.** Two organisation-scoped roles sit above project level: **Group
+Quality Manager** (ADR-0023) and **Organisation Administrator** (this ADR). They
+are the counter-signatory of last resort for signature withdrawal, checkpoint
+correction and role grants where no eligible second person exists on the project.
+
+**They are not a superuser.** They cannot sign checkpoints, release hold points,
+certify conformance, accept lots, raise lots, approve concessions or sign
+Practical Completion. This is authority to unstick people, not authority to do
+the work — and it is enforced, not intended:
+`audit.org_role_privilege_risks()` fails the build if any organisation-scoped
+role acquires a permission from that list. A role that accumulates permissions
+quietly becomes the superuser it was designed not to be.
+
+**At least two, enforced at the database.** An organisation with one
+administrator is a single resignation from the deadlock the role exists to
+prevent, and the second administrator is also who counter-signs the first. A
+trigger refuses any update or delete that would leave fewer than two active
+administrators (`LOTLINE_ORG_ADMIN_FLOOR`), naming the remedy: appoint a
+replacement first. `audit.org_admin_compliance` surfaces tenants below the floor
+rather than tolerating them silently.
+
+**Every use is logged distinctly.** `escalation_event` records the kind, the
+role used, the reason, and — the field that carries the point —
+`no_project_route_reason`. `auth.record_escalation()` **refuses** when a
+project-level route exists, so the escalation path cannot quietly become the
+ordinary path. `audit.escalation_frequency` reports 30- and 90-day counts per
+project: if this is happening weekly, the project's role structure is wrong, and
+the Quality Manager should be able to see that without reading the audit log line
+by line.
+
+**Consequences.** Tenant onboarding must appoint two administrators before the
+floor can be enforced, which is a real constraint on the setup flow rather than a
+nicety. The escalation register is a new thing for a QM to watch, and that is
+intended: it is a measurement of how well the project's own role structure is
+working.

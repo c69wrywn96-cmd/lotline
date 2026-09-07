@@ -77,35 +77,39 @@ never sufficient. Folded into `permission.min_auth_strength`.
 
 ## B2. Still open
 
-### OQ-4 — Specification suite — **answered, ingest blocked on network egress**
-**Answered:** TfNSW QA Specification suite. Q6 for the quality-system skeleton
-(full clause tree — it is the spec that structures every ITP), plus earthworks,
-unbound pavement, drainage and bridge concrete at **hold/witness-bearing clauses
-only**. Publicly published specifications, not a project contract copy: same
-document in most cases, but the public version carries no contract-specific
-annexures and no question about what we were licensed to ingest. Per ADR-0006,
-identifiers and titles only — no clause text.
+### OQ-4 — Specification suite — **answered; ingest still blocked by this environment**
+**Answered:** TfNSW QA suite from the Transport Standards Portal,
+`standards.transport.nsw.gov.au`. Publicly available under GIPA, so this is the
+public suite rather than a contract copy, as ADR-0006 requires. Seed depth: full
+clause tree for Q6; hold/witness-bearing clauses only for R44 earthworks, R11
+drainage, the unbound pavement specs and B80 bridge concrete.
 
-**Blocked:** this environment's egress proxy refuses
-`transport.nsw.gov.au` and `standards.transport.nsw.gov.au`, so the register
-cannot be pulled here. Numbering has demonstrably moved — a web search shows Q6
-now issued as `TS 01572.1`, not a bare `Q6` — which is exactly why seeding from
-memory was ruled out. The schema and a validating importer are built and tested;
-**no specification identifiers have been seeded.** Unblock by either allowlisting
-those two hosts for this environment, or dropping the register export at
-`seed/standards/tfnsw-register.json` (format documented in
-`seed/standards/README.md`), after which seeding is one command.
+**Still blocked:** this environment's egress proxy refuses that host
+(`EGRESS_BLOCKED`), retried at design review 4. The allowlist is applied to the
+environment's proxy configuration, which is not something the session can change
+from inside. Nothing has been seeded, and a test asserts no real standards body
+exists in the database so that a later seed-from-memory fails.
+
+**Consequence for Phase 2, stated plainly:** Q6 clause 5.4 defines Lot and the
+homogeneity rules, and the instruction was to read it against the schema before
+seeding — *if they disagree, the schema is wrong, not the spec.* That reading
+cannot be done without access, so **no lot homogeneity modelling has been
+attempted**. The Phase 2 sequencing given at review 4 avoids the dependency: ITP
+instance snapshot semantics and the checkpoint state machine do not rest on the
+Lot definition, so the gate logic proceeds and the lot geometry and homogeneity
+model waits on Q6.
 
 ### OQ-5 — Do you hold licences permitting k-factor tables and acceptance criteria to ship with the product? *(affects ADR-0007)*
 I have assumed **no**, and designed for tenant-populated tables. If a licence
 exists for any suite, that suite can ship populated and the onboarding burden
 drops substantially.
 
-### OQ-6 — Aerial imagery: is there a Nearmap or Metromap subscription, and what does its licence say about tile caching for offline use? *(blocks Phase 3 and Phase 6)*
-Offline-first (§7) requires caching tiles on a device. Most aerial imagery
-licences restrict this. Without an answer I will build against ESRI World
-Imagery + uploaded orthomosaics for the offline path and treat Nearmap as
-online-only, which is a materially worse field experience.
+### OQ-6 — Aerial imagery — ~~open~~ **closed, not open**
+The project's own drone orthomosaic is the primary offline basemap:
+contractor-owned, no licence to breach, and more current than Nearmap on an
+active site. Nearmap remains an online-only historical time-slider layer. The
+offline-first requirement is therefore satisfied by an asset the contractor
+already owns and flies monthly, and there is nothing to negotiate.
 
 ### OQ-7 — Is concrete accepted at lot level with characteristic-value statistics, or per AS 1379 production assessment at the supplier? *(affects Phase 4)*
 Assumption A13 says the latter. This changes what §12.5's statistics module must

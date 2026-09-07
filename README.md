@@ -13,9 +13,10 @@ spine of the data model, not a bolt-on map view.
 
 **Phase 1 in progress.** Domains A (tenancy, identity, RBAC, devices) and B
 (project structure, spatial framework, vertical datum) are migrated, seeded and
-tested. **Phase 1 complete.** 186 tests green — RLS and immutability at SQL level against
-`lotline_app`, the permission resolver, the authentication seam, credential
-sign-in, account linking, and the device and people screens.
+tested. **Phase 1 complete; Phase 2 hardening landed ahead of the ITP schema.**
+216 tests green — RLS and immutability at SQL level against `lotline_app`, the
+permission resolver, the authentication seam, credential sign-in, account
+linking, the device and people screens, and the silent-pruning guard.
 
 Design reviews 1 and 2 are complete; see `docs/decisions.md` for ADR-0001 …
 ADR-0023.
@@ -25,7 +26,7 @@ ADR-0023.
 npm install
 npm run db:reset         # apply every migration to a fresh database
 npm run db:seed          # one realistic JV project
-npm test                 # 186 assertions across 13 suites
+npm test                 # 216 assertions across 15 suites
 npm run build            # Next.js app (device enrolment screens)
 ```
 
@@ -46,6 +47,8 @@ npm run build            # Next.js app (device enrolment screens)
 | `tests/standards-import.test.ts` | That the specification importer takes identifiers and structure and **rejects** a register carrying clause text (ADR-0006). |
 | `tests/credentials.test.ts` | That the sign-in form is not an enumeration oracle, that a TOTP code cannot be replayed inside its own window, that recovery codes are single-use and buy only a session, and that a retired credential cannot authenticate. |
 | `tests/people-ui.test.ts` | That changing someone's authority requires step-up, that **nobody can grant themselves a role**, and that the change history is read from the audit log rather than a parallel table. |
+| `tests/rls-pruning-guard.test.ts` | **Fails the build** on any policy that reads another RLS-enabled table without a declared disposition, and on any policy helper that is not `SECURITY DEFINER`. See ADR-0026. |
+| `tests/org-administrator.test.ts` | That the organisation administrator can unstick people and **cannot do the work**, that a tenant keeps at least two, and that every use of the escalation route is logged distinctly. |
 
 | Document | Contents |
 |---|---|
@@ -102,3 +105,7 @@ infrastructure.
 - **Authorisation is enforced below the application.** A valid session with a raw
   SQL connection still cannot see another subcontractor's lots or release a hold
   point it is not nominated for.
+- **Silent pruning fails the build.** A policy that reads another RLS-enabled
+  table can only answer with the caller's own rows — returning 200 and an empty
+  array rather than an error. Every such reference must be declared with a
+  reason, and cross-user lookups take a `SECURITY DEFINER` helper. ADR-0026.
